@@ -293,6 +293,7 @@ class BlockingEngine:
                     + multi_word_bonus
                     + multi_addr_bonus
                 )
+                scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             # Guarantee all exact core name matches are immune to capping pruning!
             protected_exact = union_set & cands_exact
