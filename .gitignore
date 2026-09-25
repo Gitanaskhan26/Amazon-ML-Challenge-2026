@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Data and Artifacts (NEVER commit large data files)
+data/
+*.tsv
+*.csv
+*.parquet
+*.feather
+*.pkl
+*.joblib
+*.bin
+*.model
+*.zip
+*.tar.gz
+output/
+cache/
+
+# OS specific
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

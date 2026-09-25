@@ -1,0 +1,19 @@
+# High-performance Data Processing & Parquet I/O
+polars>=0.20.0
+pyarrow>=14.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Scientific Computing & Fast Sparse Math
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# Fast String Matching (High-Performance C++ bindings)
+rapidfuzz>=3.5.0
+
+# Gradient Boosted Decision Trees
+lightgbm>=4.1.0
+
+# Parallel Processing & Progress Bars
+joblib>=1.3.0
+tqdm>=4.66.0
