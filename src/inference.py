@@ -53,12 +53,25 @@ def parse_args():
         help="Maximum candidates per Source 1 entity in blocking stage"
     )
     parser.add_argument(
+        "--model-path",
+        type=str,
+        default="./data/lgb_model.txt",
+        help="Path to trained LightGBM model (if exists, uses model; otherwise uses heuristic)"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.60,
+        help="Decision threshold for matching (default: 0.60)"
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         default=True,
         help="Run utils/validate_submission.py on generated outputs"
     )
     return parser.parse_args()
+
 
 
 def run_pipeline():
@@ -84,6 +97,21 @@ def run_pipeline():
     # Detect countries (US, India, France)
     countries = list(df_s1["country"].unique())
     logger.info(f"Countries present in test set: {countries}")
+
+    # Check for trained LightGBM model
+    model_path = Path(args.model_path).resolve()
+    booster = None
+    feature_names = None
+    if model_path.exists():
+        try:
+            import lightgbm as lgb
+            booster = lgb.Booster(model_file=str(model_path))
+            feature_names = booster.feature_name()
+            logger.info(f"Loaded trained LightGBM model from: {model_path} ({len(feature_names)} features)")
+        except Exception as e:
+            logger.warning(f"Could not load LightGBM model: {e}. Falling back to heuristic scorer.")
+    else:
+        logger.info("No trained LightGBM model found. Using heuristic scoring engine.")
 
     final_candidates = {}
     final_matches = {}
@@ -139,10 +167,28 @@ def run_pipeline():
                 cands, _ = engine.retrieve_candidates_for_s1(s1_rec)
                 final_candidates[s1_id] = cands
 
-                for cand_id in cands:
-                    if cand_id in pool_lookup:
-                        score = heuristic_score_pair(s1_rec, pool_lookup[cand_id])
-                        candidate_scores.append((s1_id, cand_id, score))
+                if not cands:
+                    continue
+
+                if booster is not None:
+                    # Model-based scoring
+                    feat_matrix = []
+                    valid_cands = []
+                    for cand_id in cands:
+                        if cand_id in pool_lookup:
+                            feats = extract_pair_features(s1_rec, pool_lookup[cand_id])
+                            feat_matrix.append([feats.get(k, 0.0) for k in feature_names])
+                            valid_cands.append(cand_id)
+                    if feat_matrix:
+                        probs = booster.predict(np.array(feat_matrix, dtype=np.float32))
+                        for cand_id, prob in zip(valid_cands, probs):
+                            candidate_scores.append((s1_id, cand_id, float(prob)))
+                else:
+                    # Fast heuristic scoring
+                    for cand_id in cands:
+                        if cand_id in pool_lookup:
+                            score = heuristic_score_pair(s1_rec, pool_lookup[cand_id])
+                            candidate_scores.append((s1_id, cand_id, score))
 
         # Enforce 1-to-at-most-1 Bipartite Invariant
         with Timer(f"Enforcing 1-to-at-most-1 Conflict Resolution for {country}"):
@@ -156,13 +202,14 @@ def run_pipeline():
 
             for s1_rec in s1_preprocessed:
                 s1_id = s1_rec["entity_id"]
-                # Only consider candidates that survived conflict assignment
+                # Only consider candidates that survived conflict assignment and exceed threshold
                 survived = assigned_mapping.get(s1_id, set())
-                cand_list = [(c, sc) for c, sc in cand_scores_by_s1[s1_id] if c in survived]
+                cand_list = [(c, sc) for c, sc in cand_scores_by_s1[s1_id] if c in survived and sc >= args.threshold]
 
                 # Select optimal prefix (prunes singletons to [])
                 selected_matches = select_optimal_prefix_per_entity(cand_list)
                 final_matches[s1_id] = selected_matches
+
 
     # Write Deliverables
     cand_path = out_dir / "candidate_pairs.tsv"
