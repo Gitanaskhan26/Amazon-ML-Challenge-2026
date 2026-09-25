@@ -44,6 +44,32 @@ def jaro_winkler_sim(s1: str, s2: str) -> float:
     return float(SequenceMatcher(None, s1, s2).ratio())
 
 
+def soundex(s: str) -> str:
+    """Fast pure-Python Soundex for phonetic transliteration matching."""
+    if not s or not s[0].isalpha():
+        return ""
+    s = s.upper()
+    first = s[0]
+    mapping = {
+        'B': '1', 'F': '1', 'P': '1', 'V': '1',
+        'C': '2', 'G': '2', 'J': '2', 'K': '2', 'Q': '2', 'S': '2', 'X': '2', 'Z': '2',
+        'D': '3', 'T': '3',
+        'L': '4',
+        'M': '5', 'N': '5',
+        'R': '6'
+    }
+    encoded = [first]
+    prev = mapping.get(first, '')
+    for c in s[1:]:
+        code = mapping.get(c, '')
+        if code and code != prev:
+            encoded.append(code)
+            prev = code
+        elif c not in ('H', 'W'):
+            prev = ''
+    return ("".join(encoded) + "0000")[:4]
+
+
 def char_ngram_jaccard(s1: str, s2: str, n: int = 3) -> float:
     """Compute character n-gram Jaccard similarity in [0, 1]."""
     if not s1 or not s2:
@@ -92,6 +118,7 @@ def extract_pair_features(
     feats["exact_norm_name"] = 1.0 if n1 and n1 == n2 else 0.0
     feats["exact_core_name"] = 1.0 if c1 and c1 == c2 else 0.0
     feats["exact_first_token"] = 1.0 if t1 and t1 == t2 else 0.0
+    feats["soundex_first_token_match"] = 1.0 if (t1 and t2 and soundex(t1) == soundex(t2)) else 0.0
 
     # Leetspeak Inversion Match
     l1 = s1_rec.get("guarded_leet_name", "")
@@ -140,6 +167,11 @@ def extract_pair_features(
     has_p_prefix_match = bool(p1 and p2 and len(p1) >= 2 and len(p2) >= 2 and p1[:2] == p2[:2])
     feats["postal_prefix_match"] = 1.0 if has_p_prefix_match else 0.0
     feats["has_postal_prefix_mismatch"] = 1.0 if (p1 and p2 and len(p1) >= 2 and len(p2) >= 2 and p1[:2] != p2[:2]) else 0.0
+
+    # Postal 3-digit prefix (district / metropolitan area)
+    has_p3_match = bool(p1 and p2 and len(p1) >= 3 and len(p2) >= 3 and p1[:3] == p2[:3])
+    feats["postal_3digit_match"] = 1.0 if has_p3_match else 0.0
+    feats["has_postal_3digit_mismatch"] = 1.0 if (p1 and p2 and len(p1) >= 3 and len(p2) >= 3 and p1[:3] != p2[:3]) else 0.0
 
     # Address token similarity
     atok1 = s1_rec.get("addr_tokens", set())

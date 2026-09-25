@@ -462,13 +462,91 @@ def train_full_pool():
                 best_tau = tau
                 best_metrics = res
 
+        # Country-specific threshold search
+        best_tau_us = best_tau
+        best_score_us = 0.0
+        best_tau_in = best_tau
+        best_score_in = 0.0
+
+        for tau in np.arange(0.40, 0.80, 0.03):
+            tau = round(float(tau), 2)
+            assigned_s23 = set()
+            s1_s2_count = defaultdict(int)
+            s1_s3_count = defaultdict(int)
+            preds_tau = defaultdict(set)
+            for s1_id, cand_id, score in val_pairs_scored:
+                if score < tau:
+                    break
+                if cand_id not in assigned_s23:
+                    is_s2 = cand_id.startswith("S2")
+                    if is_s2 and s1_s2_count[s1_id] >= 5:
+                        continue
+                    if not is_s2 and s1_s3_count[s1_id] >= 5:
+                        continue
+                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
+                        continue
+                    assigned_s23.add(cand_id)
+                    if is_s2:
+                        s1_s2_count[s1_id] += 1
+                    else:
+                        s1_s3_count[s1_id] += 1
+                    preds_tau[s1_id].add(cand_id)
+
+            for s1_id in val_s1_ids:
+                if s1_id not in preds_tau:
+                    preds_tau[s1_id] = set()
+
+            res = evaluate_macro_f05(val_gt, preds_tau, countries=val_countries)
+            by_c = res.get("by_country", {})
+            sc_us = by_c.get("US", 0.0)
+            sc_in = by_c.get("India", 0.0)
+            if sc_us > best_score_us:
+                best_score_us = sc_us
+                best_tau_us = tau
+            if sc_in > best_score_in:
+                best_score_in = sc_in
+                best_tau_in = tau
+
+        # Combined evaluation with country-specific thresholds
+        assigned_s23 = set()
+        s1_s2_count = defaultdict(int)
+        s1_s3_count = defaultdict(int)
+        preds_combined = defaultdict(set)
+        for s1_id, cand_id, score in val_pairs_scored:
+            c = val_countries.get(s1_id, "US")
+            c_tau = best_tau_in if c == "India" else best_tau_us
+            if score < c_tau:
+                continue
+            if cand_id not in assigned_s23:
+                is_s2 = cand_id.startswith("S2")
+                if is_s2 and s1_s2_count[s1_id] >= 5:
+                    continue
+                if not is_s2 and s1_s3_count[s1_id] >= 5:
+                    continue
+                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
+                    continue
+                assigned_s23.add(cand_id)
+                if is_s2:
+                    s1_s2_count[s1_id] += 1
+                else:
+                    s1_s3_count[s1_id] += 1
+                preds_combined[s1_id].add(cand_id)
+
+        for s1_id in val_s1_ids:
+            if s1_id not in preds_combined:
+                preds_combined[s1_id] = set()
+
+        res_combined = evaluate_macro_f05(val_gt, preds_combined, countries=val_countries)
+
         logger.info("=" * 60)
-        logger.info(f">>> OPTIMAL DECISION THRESHOLD: tau* = {best_tau:.2f} (Macro-F0.5: {best_score:.4f}) <<<")
-        logger.info(f"  Holdout Macro Precision: {best_metrics.get('macro_precision', 0):.4f}")
-        logger.info(f"  Holdout Macro Recall:    {best_metrics.get('macro_recall', 0):.4f}")
-        logger.info(f"  Singleton F0.5 Score:    {best_metrics.get('singleton_score', 0):.4f}")
+        logger.info(f">>> GLOBAL OPTIMAL THRESHOLD: tau* = {best_tau:.2f} (Macro-F0.5: {best_score:.4f}) <<<")
+        logger.info(f">>> COUNTRY-SPECIFIC THRESHOLDS: US tau* = {best_tau_us:.2f} ({best_score_us:.4f}), India tau* = {best_tau_in:.2f} ({best_score_in:.4f}) <<<")
+        logger.info(f">>> COMBINED MACRO-F0.5 WITH COUNTRY THRESHOLDS: {res_combined['macro_f05']:.4f} <<<")
+        logger.info(f"  Combined Macro Precision: {res_combined.get('macro_precision', 0):.4f}")
+        logger.info(f"  Combined Macro Recall:    {res_combined.get('macro_recall', 0):.4f}")
+        logger.info(f"  Singleton F0.5 Score:     {res_combined.get('singleton_score', 0):.4f}")
         logger.info(f"  Country Breakdown:")
-        for c, sc in best_metrics.get("by_country", {}).items():
+        for c, sc in res_combined.get("by_country", {}).items():
             logger.info(f"    {c}: {sc:.4f}")
 
         # Save calibration metadata
@@ -476,8 +554,13 @@ def train_full_pool():
         with open(cal_path, "w", encoding="utf-8") as f:
             json.dump({
                 "optimal_threshold": best_tau,
-                "macro_f05": best_score,
-                "metrics": best_metrics,
+                "optimal_thresholds_by_country": {
+                    "US": best_tau_us,
+                    "India": best_tau_in,
+                    "France": best_tau_us
+                },
+                "macro_f05": res_combined["macro_f05"],
+                "metrics": res_combined,
                 "num_features": len(feature_names),
                 "features": feature_names
             }, f, indent=2)

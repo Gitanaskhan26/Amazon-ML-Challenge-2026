@@ -118,23 +118,27 @@ def run_pipeline():
     else:
         logger.info("No trained LightGBM model found. Using heuristic scoring engine.")
 
-    # Resolve Decision Threshold
-    effective_threshold = args.threshold
-    if effective_threshold is None:
-        cal_path = Path(__file__).resolve().parent.parent / "data" / "calibration_results.json"
-        if cal_path.exists():
-            try:
-                with open(cal_path, "r", encoding="utf-8") as f:
-                    cal_data = json.load(f)
+    # Resolve Decision Thresholds
+    cal_path = Path(__file__).resolve().parent.parent / "data" / "calibration_results.json"
+    cal_by_country = {}
+    default_threshold = args.threshold
+    if cal_path.exists():
+        try:
+            with open(cal_path, "r", encoding="utf-8") as f:
+                cal_data = json.load(f)
+                cal_by_country = cal_data.get("optimal_thresholds_by_country", {})
+                if default_threshold is None:
                     cal_tau = cal_data.get("optimal_threshold")
                     if cal_tau is not None:
-                        effective_threshold = float(cal_tau)
-                        logger.info(f"Loaded calibrated optimal threshold tau = {effective_threshold:.2f} from {cal_path.name}")
-            except Exception:
-                pass
-        if effective_threshold is None:
-            effective_threshold = 0.58
-    logger.info(f"Effective Matching Threshold: {effective_threshold:.2f}")
+                        default_threshold = float(cal_tau)
+        except Exception:
+            pass
+
+    if default_threshold is None:
+        default_threshold = 0.58
+    logger.info(f"Default Matching Threshold: {default_threshold:.2f}")
+    if cal_by_country:
+        logger.info(f"Country-Specific Calibrated Thresholds: {cal_by_country}")
 
     final_candidates = {}
     final_matches = {}
@@ -142,6 +146,15 @@ def run_pipeline():
     for country in countries:
         logger.info("=" * 60)
         logger.info(f"Processing Country Partition: {country}")
+        if args.threshold is not None:
+            country_tau = args.threshold
+        elif country in cal_by_country:
+            country_tau = float(cal_by_country[country])
+            logger.info(f"  Using Country-Calibrated Threshold for {country}: tau = {country_tau:.2f}")
+        else:
+            country_tau = default_threshold
+            logger.info(f"  Using Default Threshold for {country}: tau = {country_tau:.2f}")
+
         s1_country = df_s1[df_s1["country"] == country]
         logger.info(f"  {country} S1 count: {len(s1_country):,}")
 
@@ -230,13 +243,13 @@ def run_pipeline():
 
 
         # Enforce 1-to-at-most-1 Bipartite Invariant & Calibrated Thresholding
-        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={effective_threshold:.2f}) for {country}"):
+        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={country_tau:.2f}) for {country}"):
             candidate_scores.sort(key=lambda x: x[2], reverse=True)
             assigned_s23 = set()
             s1_s2_count = defaultdict(int)
             s1_s3_count = defaultdict(int)
             for s1_id, cand_id, score in candidate_scores:
-                if score < effective_threshold:
+                if score < country_tau:
                     break  # since candidate_scores is sorted descending
                 if cand_id not in assigned_s23:
                     is_s2 = cand_id.startswith("S2")
