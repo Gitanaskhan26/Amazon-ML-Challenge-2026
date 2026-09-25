@@ -28,7 +28,7 @@ from src.preprocessing import clean_name_multiview, clean_address_multiview
 
 
 class BlockingEngine:
-    def __init__(self, adaptive_cap: int = 35):
+    def __init__(self, adaptive_cap: int = 50):
         self.adaptive_cap = adaptive_cap
 
     def build_indexes(self, pool_records: List[Dict]):
@@ -237,7 +237,8 @@ class BlockingEngine:
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
                 exact_bonus = 0.5 if cand in cands_exact else 0.0
-                score = 0.50 * word_sim + 0.25 * num_sim + 0.25 * post_sim + exact_bonus
+                pass_bonus = 0.35 if cand in (cands_p | cands_e) else 0.0
+                score = 0.40 * word_sim + 0.20 * num_sim + 0.20 * post_sim + exact_bonus + pass_bonus
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             union_set = {cand for cand, _ in scored[:self.adaptive_cap]}

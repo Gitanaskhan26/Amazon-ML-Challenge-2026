@@ -101,6 +101,20 @@ def token_containment(set1: Set[str], set2: Set[str]) -> float:
     return len(set1 & set2) / denom if denom > 0 else 0.0
 
 
+def monge_elkan_similarity(tokens1: List[str], tokens2: List[str]) -> float:
+    """
+    Compute asymmetric Monge-Elkan similarity from tokens1 to tokens2:
+    Mean of max Jaro-Winkler similarities for each token in tokens1 across tokens2.
+    """
+    if not tokens1 or not tokens2:
+        return 0.0
+    scores = []
+    for u in tokens1:
+        max_sim = max((jaro_winkler_sim(u, v) for v in tokens2), default=0.0)
+        scores.append(max_sim)
+    return sum(scores) / len(scores)
+
+
 def extract_pair_features(
     s1_rec: Dict,
     s23_rec: Dict
@@ -137,6 +151,13 @@ def extract_pair_features(
     feats["token_jaccard_name"] = token_jaccard(tokens1, tokens2)
     feats["token_containment_name"] = token_containment(tokens1, tokens2)
     feats["common_name_tokens"] = float(len(common_tokens))
+
+    # Monge-Elkan soft token matching (robust to token reordering and insertions)
+    words1 = n1.split()
+    words2 = n2.split()
+    me_12 = monge_elkan_similarity(words1, words2)
+    me_21 = monge_elkan_similarity(words2, words1)
+    feats["monge_elkan_name"] = 0.5 * (me_12 + me_21)
 
     # Length Ratios
     len1, len2 = len(n1), len(n2)
@@ -182,6 +203,13 @@ def extract_pair_features(
     feats["token_containment_addr"] = token_containment(atok1, atok2)
     feats["common_addr_tokens"] = float(len(common_atok))
     feats["both_addr_present_zero_overlap"] = 1.0 if (a1 and a2 and not common_atok) else 0.0
+
+    # Address Monge-Elkan
+    awords1 = list(atok1)
+    awords2 = list(atok2)
+    me_a12 = monge_elkan_similarity(awords1, awords2)
+    me_a21 = monge_elkan_similarity(awords2, awords1)
+    feats["monge_elkan_addr"] = 0.5 * (me_a12 + me_a21)
 
     # Address lengths
     alen1, alen2 = len(a1), len(a2)

@@ -54,8 +54,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=35,
-        help="Maximum candidates per Source 1 entity in blocking stage (default: 35)"
+        default=50,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 50)"
     )
     parser.add_argument(
         "--model-path",
@@ -117,6 +117,18 @@ def run_pipeline():
             logger.warning(f"Could not load LightGBM model: {e}. Falling back to heuristic scorer.")
     else:
         logger.info("No trained LightGBM model found. Using heuristic scoring engine.")
+
+    # Check for trained CatBoost model (for Ensemble)
+    cb_path = model_path.parent / "cb_model.cbm"
+    cb_booster = None
+    if cb_path.exists():
+        try:
+            from catboost import CatBoostClassifier
+            cb_booster = CatBoostClassifier()
+            cb_booster.load_model(str(cb_path))
+            logger.info(f"Loaded trained CatBoost model from: {cb_path} (50/50 Ensemble Enabled!)")
+        except Exception as e:
+            logger.warning(f"Could not load CatBoost model: {e}")
 
     # Resolve Decision Thresholds
     cal_path = Path(__file__).resolve().parent.parent / "data" / "calibration_results.json"
@@ -233,7 +245,12 @@ def run_pipeline():
                         feats = extract_pair_features(s1_lookup[s1_id], pool_lookup[cand_id])
                         feat_matrix.append([feats.get(k, 0.0) for k in feature_names])
 
-                    probs = booster.predict(np.array(feat_matrix, dtype=np.float32))
+                    X_np = np.array(feat_matrix, dtype=np.float32)
+                    probs = booster.predict(X_np)
+                    if cb_booster is not None:
+                        cb_probs = cb_booster.predict_proba(X_np)[:, 1]
+                        probs = 0.5 * probs + 0.5 * cb_probs
+
                     for (s1_id, cand_id), prob in zip(batch_pairs, probs):
                         candidate_scores.append((s1_id, cand_id, float(prob)))
             else:

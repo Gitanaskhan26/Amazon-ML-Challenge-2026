@@ -44,9 +44,15 @@ try:
 except ImportError:
     HAS_LIGHTGBM = False
 
+try:
+    from catboost import CatBoostClassifier
+    HAS_CATBOOST = True
+except ImportError:
+    HAS_CATBOOST = False
+
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train LightGBM on Full Pool with Authentic Hard Negatives.")
+    parser = argparse.ArgumentParser(description="Train LightGBM & CatBoost Ensemble on Full Pool with Authentic Hard Negatives.")
     parser.add_argument(
         "--train-dir",
         type=str,
@@ -74,8 +80,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=35,
-        help="Maximum candidates per Source 1 entity in blocking stage (default: 35)"
+        default=50,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 50)"
     )
     parser.add_argument(
         "--n-jobs",
@@ -401,9 +407,35 @@ def train_full_pool():
     for fname, imp in feat_imp[:15]:
         logger.info(f"  {fname:<30}: {imp:.2f}")
 
+    # Train CatBoost if installed
+    cb_model = None
+    if HAS_CATBOOST:
+        with Timer("Training CatBoost Classifier with Symmetric Trees"):
+            cb_model = CatBoostClassifier(
+                iterations=350,
+                learning_rate=0.08,
+                depth=7,
+                thread_count=args.n_jobs,
+                verbose=50,
+                eval_metric="Logloss",
+                random_seed=args.seed
+            )
+            cb_model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=30, verbose=50)
+            cb_path = model_out.parent / "cb_model.cbm"
+            cb_model.save_model(str(cb_path))
+            logger.info(f"Trained CatBoost model saved to: {cb_path}")
+    else:
+        logger.info("CatBoost not installed. Using LightGBM standalone (run 'pip install catboost' for ensemble).")
+
     # 5. Holdout Evaluation & Threshold Calibration
     with Timer(f"Holdout Evaluation & Threshold Grid Search on {len(df_s1_val):,} entities"):
-        val_preds = booster.predict(X_val)
+        lgb_preds = booster.predict(X_val)
+        if cb_model is not None:
+            cb_preds = cb_model.predict_proba(X_val)[:, 1]
+            val_preds = 0.5 * lgb_preds + 0.5 * cb_preds
+            logger.info("Using 50/50 Ensemble of LightGBM + CatBoost for Holdout Validation!")
+        else:
+            val_preds = lgb_preds
 
         val_pairs_scored = [
             (all_eval_pairs[i][0], all_eval_pairs[i][1], float(val_preds[i]))

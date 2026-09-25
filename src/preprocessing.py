@@ -193,6 +193,11 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     if len(core_str) < 2:
         core_str = norm_str
 
+    # Strip honorary business prefixes at START (m/s, messrs, shree, shri, sri)
+    clean_prefix = re.sub(r"^(m\s*/\s*s|messrs|shree|shri|sri|om|smt)\b\s*", "", core_str, flags=re.IGNORECASE).strip()
+    if len(clean_prefix) >= 2:
+        core_str = clean_prefix
+
     # Augment with mined token translations (e.g. Indic script -> English)
     if MINED_TOKEN_MAP:
         extra_tokens = [MINED_TOKEN_MAP[t] for t in core_str.split() if t in MINED_TOKEN_MAP]
