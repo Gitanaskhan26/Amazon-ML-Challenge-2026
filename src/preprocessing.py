@@ -193,6 +193,11 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     if len(core_str) < 2:
         core_str = norm_str
 
+    # Strip Devanagari legal suffixes (प र इव ट ल म ट ड, ल म ट ड, प र इव ट)
+    core_str = re.sub(r"(प\s*र\s*इ\s*व\s*ट\s*ल\s*म\s*ट\s*ड|ल\s*म\s*ट\s*ड|प\s*र\s*इ\s*व\s*ट)\b", "", core_str, flags=re.IGNORECASE).strip()
+    if len(core_str) < 2:
+        core_str = norm_str
+
     # Strip honorary business prefixes at START (m/s, messrs, shree, shri, sri)
     clean_prefix = re.sub(r"^(m\s*/\s*s|messrs|shree|shri|sri|om|smt)\b\s*", "", core_str, flags=re.IGNORECASE).strip()
     if len(clean_prefix) >= 2:
@@ -204,9 +209,10 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
         if extra_tokens:
             core_str = core_str + " " + " ".join(extra_tokens)
 
-    # Extract first non-trivial token
+    # Extract first non-trivial token (prioritize latin token if available for cross-script alignment)
     core_tokens = [t for t in core_str.split() if len(t) >= 2]
-    first_token = core_tokens[0] if core_tokens else (norm_str[:4] if norm_str else "")
+    latin_tokens = [t for t in core_tokens if t.isascii() and t.isalpha()]
+    first_token = latin_tokens[0] if latin_tokens else (core_tokens[0] if core_tokens else (norm_str[:4] if norm_str else ""))
 
     return {
         "raw_name": raw,
@@ -274,8 +280,8 @@ def clean_address_multiview(raw_addr: str, country: str = "") -> Dict[str, any]:
     s = re.sub(r"\s+", " ", s).strip()
 
     tokens = set(s.split())
-    # Noise stop-tokens
-    noise = {"hn", "plot", "door", "no", "flat", "near", "behind", "opp", "floor"}
+    # Noise stop-tokens (prefixes/unit types that cause spurious street token mismatches)
+    noise = {"hn", "plot", "door", "no", "flat", "near", "behind", "opp", "floor", "shop", "shp", "c", "o", "bldg", "unit"}
     addr_tokens = tokens - noise
 
     # First street token (excluding pure numbers)

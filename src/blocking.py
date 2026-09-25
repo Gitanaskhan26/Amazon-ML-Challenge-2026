@@ -40,8 +40,10 @@ class BlockingEngine:
         self.idx_exact_name = defaultdict(list)
         self.idx_rare_token = defaultdict(list)
         self.idx_bigram = defaultdict(list)
+        self.idx_name_pair = defaultdict(list)
         self.idx_num_first = defaultdict(list)
         self.idx_num_street = defaultdict(list)
+        self.idx_num_addr = defaultdict(list)
         self.idx_num_post = defaultdict(list)
         self.idx_post_name = defaultdict(list)
         self.idx_post_street = defaultdict(list)
@@ -91,6 +93,13 @@ class BlockingEngine:
             for i in range(len(words) - 1):
                 self.idx_bigram[(words[i], words[i+1])].append(e_id)
 
+            # Pass A3: Unordered Rare Name Pairs (robust to reordering and token insertions)
+            rare_words = sorted([w for w in words if self.token_freq[w] <= 8000], key=lambda w: self.token_freq[w])
+            for i in range(min(4, len(rare_words))):
+                for j in range(i + 1, min(4, len(rare_words))):
+                    pair = (rare_words[i], rare_words[j]) if rare_words[i] < rare_words[j] else (rare_words[j], rare_words[i])
+                    self.idx_name_pair[pair].append(e_id)
+
             # Pass B: (street_number, name_token)
             for num in numbers:
                 for w in words[:3]:
@@ -100,6 +109,12 @@ class BlockingEngine:
             if street_tok and len(street_tok) >= 3:
                 for num in numbers:
                     self.idx_num_street[(num, street_tok)].append(e_id)
+
+            # Pass B3: (street_number, rare_addr_token) - Crucial for non-Latin names and messy road names
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 3000], key=lambda x: self.addr_token_freq[x])
+            for num in numbers:
+                for a in addr_words[:3]:
+                    self.idx_num_addr[(num, a)].append(e_id)
 
             # Pass D: (street_number, postal_code)
             if postal:
@@ -115,10 +130,11 @@ class BlockingEngine:
             if postal and street_tok and len(street_tok) >= 3:
                 self.idx_post_street[(postal, street_tok)].append(e_id)
 
-            # Pass E: Address token pairs (critical for Indic entities where name is in native script)
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 800], key=lambda x: self.addr_token_freq[x])
-            if len(addr_words) >= 2:
-                self.idx_addr_rare[(addr_words[0], addr_words[1])].append(e_id)
+            # Pass E: Combinatorial Address Token Pairs
+            for i in range(min(4, len(addr_words))):
+                for j in range(i + 1, min(4, len(addr_words))):
+                    pair = (addr_words[i], addr_words[j]) if addr_words[i] < addr_words[j] else (addr_words[j], addr_words[i])
+                    self.idx_addr_rare[pair].append(e_id)
 
             # Pass C: Character 3-grams (filtered for speed)
             if len(compact) >= 3:
@@ -170,7 +186,16 @@ class BlockingEngine:
             if pair in self.idx_bigram:
                 cands_a.update(self.idx_bigram[pair][:20])
 
-        # Pass B & B2: Street Number + Word / Street (ALWAYS queried)
+        # Pass A3: Unordered Rare Name Pairs (vital for word reordering / extra words)
+        rare_words = sorted([w for w in words if self.token_freq.get(w, 0) <= 8000], key=lambda w: self.token_freq.get(w, 0))
+        for i in range(min(4, len(rare_words))):
+            for j in range(i + 1, min(4, len(rare_words))):
+                pair = (rare_words[i], rare_words[j]) if rare_words[i] < rare_words[j] else (rare_words[j], rare_words[i])
+                if pair in self.idx_name_pair:
+                    cands_a.update(self.idx_name_pair[pair][:20])
+
+        # Pass B, B2, B3: Street Number + Word / Street / Rare Addr Token
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 3000], key=lambda x: self.addr_token_freq.get(x, 0))
         for num in numbers:
             for w in words[:3]:
                 key = (num, w)
@@ -180,6 +205,10 @@ class BlockingEngine:
                 key = (num, street_tok)
                 if key in self.idx_num_street:
                     cands_b.update(self.idx_num_street[key][:20])
+            for a in addr_words[:3]:
+                key = (num, a)
+                if key in self.idx_num_addr:
+                    cands_b.update(self.idx_num_addr[key][:20])
 
         # Pass D: Street Number + Postal (ALWAYS queried)
         if postal:
@@ -199,12 +228,12 @@ class BlockingEngine:
                 if key in self.idx_post_street:
                     cands_p.update(self.idx_post_street[key][:20])
 
-        # Pass E: Address token pairs (ALWAYS queried)
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 800], key=lambda x: self.addr_token_freq.get(x, 0))
-        if len(addr_words) >= 2:
-            key = (addr_words[0], addr_words[1])
-            if key in self.idx_addr_rare:
-                cands_e.update(self.idx_addr_rare[key][:20])
+        # Pass E: Combinatorial Address Token Pairs
+        for i in range(min(4, len(addr_words))):
+            for j in range(i + 1, min(4, len(addr_words))):
+                pair = (addr_words[i], addr_words[j]) if addr_words[i] < addr_words[j] else (addr_words[j], addr_words[i])
+                if pair in self.idx_addr_rare:
+                    cands_e.update(self.idx_addr_rare[pair][:20])
 
         # Pass C: Character 3-grams (fallback if total candidates < 15)
         if len(cands_exact | cands_a | cands_b | cands_d | cands_e | cands_p) < 15 and len(compact) >= 3:
@@ -236,9 +265,10 @@ class BlockingEngine:
                 word_sim = inter / union_len if union_len > 0 else 0.0
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
-                exact_bonus = 0.5 if cand in cands_exact else 0.0
-                pass_bonus = 0.35 if cand in (cands_p | cands_e) else 0.0
-                score = 0.40 * word_sim + 0.20 * num_sim + 0.20 * post_sim + exact_bonus + pass_bonus
+                exact_bonus = 0.50 if cand in cands_exact else 0.0
+                pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
+                multi_word_bonus = 0.30 if inter >= 2 else 0.0
+                score = 0.35 * word_sim + 0.20 * num_sim + 0.15 * post_sim + exact_bonus + pass_bonus + multi_word_bonus
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             union_set = {cand for cand, _ in scored[:self.adaptive_cap]}
