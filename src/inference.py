@@ -16,7 +16,7 @@ import sys
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
@@ -24,12 +24,14 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils import Timer, logger, write_submission_tsv, find_file
 from src.preprocessing import clean_name_multiview, clean_address_multiview
+from src.features import extract_pair_features
 from src.blocking import BlockingEngine
 from src.train import (
     heuristic_score_pair,
     solve_greedy_bipartite_assignment,
     select_optimal_prefix_per_entity
 )
+
 
 
 def parse_args():
@@ -126,14 +128,19 @@ def run_pipeline():
         pool_records = []
         with Timer(f"Ingesting & Preprocessing S2/S3 for {country}"):
             for s_name, s_path in [("Source2", s2_path), ("Source3", s3_path)]:
-                chunksize = 250000
+                chunksize = 500000
                 for chunk in pd.read_csv(s_path, sep="\t", dtype=str, chunksize=chunksize):
                     sub = chunk[chunk["country"] == country]
-                    for _, r in sub.iterrows():
-                        nv = clean_name_multiview(r.get("business_name", ""))
-                        av = clean_address_multiview(r.get("business_address", ""), country=country)
+                    if len(sub) == 0:
+                        continue
+                    sub_ids = sub["entity_id"].tolist()
+                    sub_names = sub["business_name"].fillna("").tolist()
+                    sub_addrs = sub["business_address"].fillna("").tolist()
+                    for e_id, b_name, b_addr in zip(sub_ids, sub_names, sub_addrs):
+                        nv = clean_name_multiview(b_name)
+                        av = clean_address_multiview(b_addr, country=country)
                         pool_records.append({
-                            "entity_id": r["entity_id"],
+                            "entity_id": e_id,
                             "country": country,
                             **nv,
                             **av
@@ -149,15 +156,19 @@ def run_pipeline():
 
         # Preprocess S1 records
         s1_preprocessed = []
-        for _, r in s1_country.iterrows():
-            nv = clean_name_multiview(r.get("business_name", ""))
-            av = clean_address_multiview(r.get("business_address", ""), country=country)
+        s1_ids = s1_country["entity_id"].tolist()
+        s1_names = s1_country["business_name"].fillna("").tolist()
+        s1_addrs = s1_country["business_address"].fillna("").tolist()
+        for e_id, b_name, b_addr in zip(s1_ids, s1_names, s1_addrs):
+            nv = clean_name_multiview(b_name)
+            av = clean_address_multiview(b_addr, country=country)
             s1_preprocessed.append({
-                "entity_id": r["entity_id"],
+                "entity_id": e_id,
                 "country": country,
                 **nv,
                 **av
             })
+
 
         # Candidate Retrieval & Pairwise Scoring
         candidate_scores = []
