@@ -169,7 +169,7 @@ class BlockingEngine:
 
         # Pass 0: Exact compact core
         if compact in self.idx_exact_name:
-            cands_exact.update(self.idx_exact_name[compact][:25])
+            cands_exact.update(self.idx_exact_name[compact][:100])
 
         s1_words = s1_record.get("core_words")
         if s1_words is None:
@@ -293,9 +293,12 @@ class BlockingEngine:
                     + multi_word_bonus
                     + multi_addr_bonus
                 )
-                scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
-            union_set = {cand for cand, _ in scored[:self.adaptive_cap]}
+            # Guarantee all exact core name matches are immune to capping pruning!
+            protected_exact = union_set & cands_exact
+            remaining = [c for c, _ in scored if c not in protected_exact]
+            slots_left = max(0, self.adaptive_cap - len(protected_exact))
+            union_set = protected_exact | set(remaining[:slots_left])
 
         per_pass = {
             "Pass_Exact": cands_exact,
