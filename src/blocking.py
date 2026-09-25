@@ -83,10 +83,10 @@ class BlockingEngine:
             for i in range(len(words) - 1):
                 self.idx_bigram[(words[i], words[i+1])].add(e_id)
 
-            # Pass B: (street_number, first_name_token)
-            if first_tok and len(first_tok) >= 2:
-                for num in numbers:
-                    self.idx_num_first[(num, first_tok)].add(e_id)
+            # Pass B: (street_number, name_token)
+            for num in numbers:
+                for w in words[:3]:
+                    self.idx_num_first[(num, w)].add(e_id)
 
             # Pass B2: (street_number, first_street_token)
             if street_tok and len(street_tok) >= 3:
@@ -116,7 +116,6 @@ class BlockingEngine:
         """
         core_name = s1_record["core_name"]
         compact = core_name.replace(" ", "")
-        first_tok = s1_record["first_token"]
         numbers = s1_record["street_numbers"]
         postal = s1_record["postal_code"]
         street_tok = s1_record["first_street_token"]
@@ -132,10 +131,10 @@ class BlockingEngine:
         if compact in self.idx_exact_name:
             cands_exact.update(self.idx_exact_name[compact])
 
-        # Pass A: Rare tokens (rarest first)
+        # Pass A: Rare tokens (rarest first, check up to 5)
         words = [w for w in core_name.split() if len(w) >= 2]
         words.sort(key=lambda w: self.token_freq.get(w, 0))
-        for w in words[:3]:
+        for w in words[:5]:
             if w in self.idx_rare_token:
                 cands_a.update(self.idx_rare_token[w])
 
@@ -145,12 +144,14 @@ class BlockingEngine:
             if pair in self.idx_bigram:
                 cands_a.update(self.idx_bigram[pair])
 
-        # Pass B: Number + first name word / street
+        # Pass B: Number + any of top 3 name words / street
         for num in numbers:
-            if first_tok and (num, first_tok) in self.idx_num_first:
-                cands_b.update(self.idx_num_first[(num, first_tok)])
+            for w in words[:3]:
+                if (num, w) in self.idx_num_first:
+                    cands_b.update(self.idx_num_first[(num, w)])
             if street_tok and (num, street_tok) in self.idx_num_street:
                 cands_b.update(self.idx_num_street[(num, street_tok)])
+
 
         # Pass D: Number + postal
         if postal:
@@ -323,7 +324,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run 5-pass blocking.")
     parser.add_argument("--val-dir", type=str, default="./data/val", help="Path to validation directory")
     parser.add_argument("--out-candidate", type=str, default="./data/val/candidate_pairs.tsv", help="Path to output candidate pairs")
-    parser.add_argument("--adaptive-cap", type=int, default=30, help="Adaptive candidate cap per S1 entity")
+    parser.add_argument("--adaptive-cap", type=int, default=45, help="Adaptive candidate cap per S1 entity (default: 45)")
     args = parser.parse_args()
 
     run_blocking_validation(
@@ -331,3 +332,4 @@ if __name__ == "__main__":
         out_candidate_path=Path(args.out_candidate),
         adaptive_cap=args.adaptive_cap
     )
+
