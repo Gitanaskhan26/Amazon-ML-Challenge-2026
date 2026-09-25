@@ -51,9 +51,10 @@ class BlockingEngine:
         self.addr_token_freq = Counter()
         self.char3_freq = Counter()
         for r in pool_records:
-            for w in r["core_name"].split():
-                if len(w) >= 2:
-                    self.token_freq[w] += 1
+            if "core_words" not in r:
+                r["core_words"] = set(w for w in r["core_name"].split() if len(w) >= 2)
+            for w in r["core_words"]:
+                self.token_freq[w] += 1
             for a in r.get("addr_tokens", set()):
                 if len(a) >= 3:
                     self.addr_token_freq[a] += 1
@@ -63,8 +64,8 @@ class BlockingEngine:
                     self.char3_freq[compact[i:i+3]] += 1
 
         n_records = len(pool_records)
-        rare_thresh = max(100, int(n_records * 0.003))
-        char3_thresh = max(100, int(n_records * 0.002))
+        self.rare_thresh = min(350, max(50, int(n_records * 0.0005)))
+        self.char3_thresh = min(60, max(20, int(n_records * 0.0001)))
 
         for r in pool_records:
             e_id = r["entity_id"]
@@ -79,9 +80,9 @@ class BlockingEngine:
                 self.idx_exact_name[compact].add(e_id)
 
             # Pass A: Rare core name tokens (IDF prioritized)
-            words = [w for w in core_name.split() if len(w) >= 2]
+            words = list(r["core_words"])
             for w in words:
-                if self.token_freq[w] <= rare_thresh:
+                if self.token_freq[w] <= self.rare_thresh:
                     self.idx_rare_token[w].add(e_id)
 
             # Pass A2: Core name bigrams
@@ -104,7 +105,7 @@ class BlockingEngine:
                     self.idx_num_post[(num, postal)].add(e_id)
 
             # Pass E: Address token pairs (critical for Indic entities where name is in native script)
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 150], key=lambda x: self.addr_token_freq[x])
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 100], key=lambda x: self.addr_token_freq[x])
             if len(addr_words) >= 2:
                 self.idx_addr_rare[(addr_words[0], addr_words[1])].add(e_id)
 
@@ -112,7 +113,7 @@ class BlockingEngine:
             if len(compact) >= 3:
                 for i in range(len(compact) - 2):
                     tri = compact[i:i+3]
-                    if self.char3_freq[tri] <= char3_thresh:
+                    if self.char3_freq[tri] <= self.char3_thresh:
                         self.idx_char3[tri].add(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
@@ -138,12 +139,18 @@ class BlockingEngine:
         if compact in self.idx_exact_name:
             cands_exact.update(self.idx_exact_name[compact])
 
-        # Pass A: Rare tokens (rarest first, check up to 5)
-        words = [w for w in core_name.split() if len(w) >= 2]
-        words.sort(key=lambda w: self.token_freq.get(w, 0))
-        for w in words[:5]:
-            if w in self.idx_rare_token:
+        s1_words = s1_record.get("core_words")
+        if s1_words is None:
+            s1_words = set(w for w in core_name.split() if len(w) >= 2)
+            s1_record["core_words"] = s1_words
+
+        # Pass A: Rare tokens (rarest first, check up to 4, break early if >= 80 cands)
+        words = sorted(list(s1_words), key=lambda w: self.token_freq.get(w, 0))
+        for w in words[:4]:
+            if self.token_freq.get(w, 0) <= self.rare_thresh and w in self.idx_rare_token:
                 cands_a.update(self.idx_rare_token[w])
+                if len(cands_a) >= 80:
+                    break
 
         # Pass A2: Bigrams
         for i in range(len(words) - 1):
@@ -167,40 +174,40 @@ class BlockingEngine:
                     cands_d.update(self.idx_num_post[key])
 
         # Pass E: Address token pairs (Indic entities)
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 150], key=lambda x: self.addr_token_freq.get(x, 0))
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 100], key=lambda x: self.addr_token_freq.get(x, 0))
         if len(addr_words) >= 2:
             key = (addr_words[0], addr_words[1])
             if key in self.idx_addr_rare:
                 cands_e.update(self.idx_addr_rare[key])
 
-        # Pass C: Character 3-grams (if candidates < 20, query top 3 rarest 3-grams)
-        if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 20 and len(compact) >= 3:
+        # Pass C: Character 3-grams (if candidates < 15, query top 3 rarest 3-grams)
+        if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 15 and len(compact) >= 3:
             char_counts = Counter()
             tris = [compact[i:i+3] for i in range(len(compact)-2)]
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
             for tri in tris[:3]:
-                if tri in self.idx_char3:
+                if self.char3_freq.get(tri, 0) <= self.char3_thresh and tri in self.idx_char3:
                     for cid in self.idx_char3[tri]:
                         char_counts[cid] += 1
             for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
-
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e
 
         # Intelligent Similarity-Based Capping (preserves true matches with high similarity)
         if len(union_set) > self.adaptive_cap:
-            s1_words = set(words)
             s1_nums = numbers
+            len_s1 = len(s1_words)
             scored = []
             for cand in union_set:
                 r = self.pool_lookup.get(cand)
                 if not r:
-                    scored.append((cand, 0.0))
                     continue
-                c_words = set(r["core_name"].split())
-                word_sim = len(s1_words & c_words) / max(1, len(s1_words | c_words)) if s1_words else 0.0
+                c_words = r.get("core_words", set())
+                inter = len(s1_words & c_words)
+                union_len = len_s1 + len(c_words) - inter
+                word_sim = inter / union_len if union_len > 0 else 0.0
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
                 exact_bonus = 0.5 if cand in cands_exact else 0.0
                 score = 0.65 * word_sim + 0.35 * num_sim + exact_bonus

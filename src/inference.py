@@ -142,6 +142,7 @@ def run_pipeline():
                         pool_records.append({
                             "entity_id": e_id,
                             "country": country,
+                            "core_words": set(w for w in nv["core_name"].split() if len(w) >= 2),
                             **nv,
                             **av
                         })
@@ -165,6 +166,7 @@ def run_pipeline():
             s1_preprocessed.append({
                 "entity_id": e_id,
                 "country": country,
+                "core_words": set(w for w in nv["core_name"].split() if len(w) >= 2),
                 **nv,
                 **av
             })
