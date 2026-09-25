@@ -37,14 +37,14 @@ class BlockingEngine:
         """
         self.pool_lookup = {r["entity_id"]: r for r in pool_records}
 
-        self.idx_exact_name = defaultdict(set)
-        self.idx_rare_token = defaultdict(set)
-        self.idx_bigram = defaultdict(set)
-        self.idx_num_first = defaultdict(set)
-        self.idx_num_street = defaultdict(set)
-        self.idx_num_post = defaultdict(set)
-        self.idx_addr_rare = defaultdict(set)
-        self.idx_char3 = defaultdict(set)
+        self.idx_exact_name = defaultdict(list)
+        self.idx_rare_token = defaultdict(list)
+        self.idx_bigram = defaultdict(list)
+        self.idx_num_first = defaultdict(list)
+        self.idx_num_street = defaultdict(list)
+        self.idx_num_post = defaultdict(list)
+        self.idx_addr_rare = defaultdict(list)
+        self.idx_char3 = defaultdict(list)
 
         # Token and 3-gram frequencies
         self.token_freq = Counter()
@@ -64,8 +64,8 @@ class BlockingEngine:
                     self.char3_freq[compact[i:i+3]] += 1
 
         n_records = len(pool_records)
-        self.rare_thresh = min(350, max(50, int(n_records * 0.0005)))
-        self.char3_thresh = min(60, max(20, int(n_records * 0.0001)))
+        self.rare_thresh = 5000
+        self.char3_thresh = min(300, max(20, int(n_records * 0.0005)))
 
         for r in pool_records:
             e_id = r["entity_id"]
@@ -77,48 +77,49 @@ class BlockingEngine:
 
             # Pass 0: Exact compact core name
             if len(compact) >= 2:
-                self.idx_exact_name[compact].add(e_id)
+                self.idx_exact_name[compact].append(e_id)
 
             # Pass A: Rare core name tokens (IDF prioritized)
             words = list(r["core_words"])
             for w in words:
                 if self.token_freq[w] <= self.rare_thresh:
-                    self.idx_rare_token[w].add(e_id)
+                    self.idx_rare_token[w].append(e_id)
 
             # Pass A2: Core name bigrams
             for i in range(len(words) - 1):
-                self.idx_bigram[(words[i], words[i+1])].add(e_id)
+                self.idx_bigram[(words[i], words[i+1])].append(e_id)
 
             # Pass B: (street_number, name_token)
             for num in numbers:
                 for w in words[:3]:
-                    self.idx_num_first[(num, w)].add(e_id)
+                    self.idx_num_first[(num, w)].append(e_id)
 
             # Pass B2: (street_number, first_street_token)
             if street_tok and len(street_tok) >= 3:
                 for num in numbers:
-                    self.idx_num_street[(num, street_tok)].add(e_id)
+                    self.idx_num_street[(num, street_tok)].append(e_id)
 
             # Pass D: (street_number, postal_code)
             if postal:
                 for num in numbers:
-                    self.idx_num_post[(num, postal)].add(e_id)
+                    self.idx_num_post[(num, postal)].append(e_id)
 
             # Pass E: Address token pairs (critical for Indic entities where name is in native script)
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 100], key=lambda x: self.addr_token_freq[x])
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 250], key=lambda x: self.addr_token_freq[x])
             if len(addr_words) >= 2:
-                self.idx_addr_rare[(addr_words[0], addr_words[1])].add(e_id)
+                self.idx_addr_rare[(addr_words[0], addr_words[1])].append(e_id)
 
             # Pass C: Character 3-grams (filtered for speed)
             if len(compact) >= 3:
                 for i in range(len(compact) - 2):
                     tri = compact[i:i+3]
                     if self.char3_freq[tri] <= self.char3_thresh:
-                        self.idx_char3[tri].add(e_id)
+                        self.idx_char3[tri].append(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
         Query inverted indexes across Passes 0, A, B, C, D, E.
+        All passes contribute their top candidates via bounded posting list slicing.
         Returns:
           (union_candidates, per_pass_candidates)
         """
@@ -137,75 +138,60 @@ class BlockingEngine:
 
         # Pass 0: Exact compact core
         if compact in self.idx_exact_name:
-            cands_exact.update(self.idx_exact_name[compact])
+            cands_exact.update(self.idx_exact_name[compact][:5])
 
         s1_words = s1_record.get("core_words")
         if s1_words is None:
             s1_words = set(w for w in core_name.split() if len(w) >= 2)
             s1_record["core_words"] = s1_words
 
-        # Pass A: Rare tokens (rarest first, check up to 4, break early if >= 50 cands)
         words = sorted(list(s1_words), key=lambda w: self.token_freq.get(w, 0))
+
+        # Pass A: Rare tokens (rarest first, check up to 4 words, up to 30 per word)
         for w in words[:4]:
             if self.token_freq.get(w, 0) <= self.rare_thresh and w in self.idx_rare_token:
-                cands_a.update(self.idx_rare_token[w])
-                if len(cands_a) >= 50:
-                    break
+                cands_a.update(self.idx_rare_token[w][:30])
 
-        # Pass A2: Bigrams (only if name candidates < 25)
-        if len(cands_exact | cands_a) < 25:
-            for i in range(len(words) - 1):
-                pair = (words[i], words[i+1])
-                if pair in self.idx_bigram:
-                    cands_a.update(self.idx_bigram[pair])
-                    if len(cands_exact | cands_a) >= 40:
-                        break
+        # Pass A2: Bigrams
+        for i in range(len(words) - 1):
+            pair = (words[i], words[i+1])
+            if pair in self.idx_bigram:
+                cands_a.update(self.idx_bigram[pair][:20])
 
-        # Pass B & D: Address & Street fallbacks (only if candidates < 20)
-        # Non-discriminative collisions (e.g. 100 Main St across cities) are guarded with size <= 50
-        if len(cands_exact | cands_a) < 20:
+        # Pass B & B2: Street Number + Word / Street (ALWAYS queried)
+        for num in numbers:
+            for w in words[:3]:
+                key = (num, w)
+                if key in self.idx_num_first:
+                    cands_b.update(self.idx_num_first[key][:20])
+            if street_tok:
+                key = (num, street_tok)
+                if key in self.idx_num_street:
+                    cands_b.update(self.idx_num_street[key][:20])
+
+        # Pass D: Street Number + Postal (ALWAYS queried)
+        if postal:
             for num in numbers:
-                for w in words[:3]:
-                    key = (num, w)
-                    if key in self.idx_num_first:
-                        plist = self.idx_num_first[key]
-                        if len(plist) <= 50:
-                            cands_b.update(plist)
-                if street_tok:
-                    key = (num, street_tok)
-                    if key in self.idx_num_street:
-                        plist = self.idx_num_street[key]
-                        if len(plist) <= 50:
-                            cands_b.update(plist)
+                key = (num, postal)
+                if key in self.idx_num_post:
+                    cands_d.update(self.idx_num_post[key][:20])
 
-            if postal:
-                for num in numbers:
-                    key = (num, postal)
-                    if key in self.idx_num_post:
-                        plist = self.idx_num_post[key]
-                        if len(plist) <= 50:
-                            cands_d.update(plist)
+        # Pass E: Address token pairs (ALWAYS queried)
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 250], key=lambda x: self.addr_token_freq.get(x, 0))
+        if len(addr_words) >= 2:
+            key = (addr_words[0], addr_words[1])
+            if key in self.idx_addr_rare:
+                cands_e.update(self.idx_addr_rare[key][:20])
 
-            # Pass E: Address token pairs (Indic entities)
-            addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 80], key=lambda x: self.addr_token_freq.get(x, 0))
-            if len(addr_words) >= 2:
-                key = (addr_words[0], addr_words[1])
-                if key in self.idx_addr_rare:
-                    plist = self.idx_addr_rare[key]
-                    if len(plist) <= 50:
-                        cands_e.update(plist)
-
-        # Pass C: Character 3-grams (deep fallback if candidates < 15)
+        # Pass C: Character 3-grams (fallback if total candidates < 15)
         if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 15 and len(compact) >= 3:
             char_counts = Counter()
             tris = [compact[i:i+3] for i in range(len(compact)-2)]
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
             for tri in tris[:3]:
                 if self.char3_freq.get(tri, 0) <= self.char3_thresh and tri in self.idx_char3:
-                    plist = self.idx_char3[tri]
-                    if len(plist) <= 50:
-                        for cid in plist:
-                            char_counts[cid] += 1
+                    for cid in self.idx_char3[tri][:20]:
+                        char_counts[cid] += 1
             for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
 

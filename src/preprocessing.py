@@ -130,12 +130,31 @@ def guarded_leet_reverse(token: str) -> str:
     return "".join(chars)
 
 
+MINED_TOKEN_MAP = {}
+
+def load_mined_token_map(map_path: Optional[Path] = None):
+    """Load pre-mined bilingual/Indic token mapping dictionary if present."""
+    global MINED_TOKEN_MAP
+    if map_path is None:
+        default_path = Path(__file__).resolve().parent.parent / "data" / "mined_token_map.json"
+        if default_path.exists():
+            map_path = default_path
+    if map_path and Path(map_path).exists():
+        try:
+            with open(map_path, "r", encoding="utf-8") as f:
+                MINED_TOKEN_MAP = json.load(f)
+        except Exception:
+            pass
+
+load_mined_token_map()
+
+
 def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     """
     Produces protected multi-view representations of a business name:
       - raw_name: unmodified input string
       - norm_name: unaccented, lowercased, handles/domains stripped, punctuation normalized
-      - core_name: legal suffixes removed from end, core identity tokens
+      - core_name: legal suffixes removed from end, core identity tokens + mined translations
       - guarded_leet_name: leet inversion on majority-alpha tokens
       - first_token: first discriminative word (length >= 2)
     """
@@ -173,6 +192,12 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     core_str = LEGAL_SUFFIX_REGEX.sub("", norm_str).strip()
     if len(core_str) < 2:
         core_str = norm_str
+
+    # Augment with mined token translations (e.g. Indic script -> English)
+    if MINED_TOKEN_MAP:
+        extra_tokens = [MINED_TOKEN_MAP[t] for t in core_str.split() if t in MINED_TOKEN_MAP]
+        if extra_tokens:
+            core_str = core_str + " " + " ".join(extra_tokens)
 
     # Extract first non-trivial token
     core_tokens = [t for t in core_str.split() if len(t) >= 2]
