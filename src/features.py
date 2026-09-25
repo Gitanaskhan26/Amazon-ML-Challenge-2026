@@ -18,9 +18,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
 
 # Add repository root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -96,6 +93,12 @@ def extract_pair_features(
     feats["exact_core_name"] = 1.0 if c1 and c1 == c2 else 0.0
     feats["exact_first_token"] = 1.0 if t1 and t1 == t2 else 0.0
 
+    # Leetspeak Inversion Match
+    l1 = s1_rec.get("guarded_leet_name", "")
+    l2 = s23_rec.get("guarded_leet_name", "")
+    feats["exact_leet_name"] = 1.0 if l1 and l1 == l2 else 0.0
+    feats["jw_leet_name"] = jaro_winkler_sim(l1, l2) if (l1 and l2) else 0.0
+
     # 2. String Similarities
     feats["jw_norm_name"] = jaro_winkler_sim(n1, n2)
     feats["jw_core_name"] = jaro_winkler_sim(c1, c2)
@@ -103,8 +106,10 @@ def extract_pair_features(
 
     tokens1 = set(n1.split())
     tokens2 = set(n2.split())
+    common_tokens = tokens1 & tokens2
     feats["token_jaccard_name"] = token_jaccard(tokens1, tokens2)
     feats["token_containment_name"] = token_containment(tokens1, tokens2)
+    feats["common_name_tokens"] = float(len(common_tokens))
 
     # Length Ratios
     len1, len2 = len(n1), len(n2)
@@ -131,17 +136,34 @@ def extract_pair_features(
     feats["exact_postal_code"] = 1.0 if (p1 and p2 and p1 == p2) else 0.0
     feats["has_postal_mismatch"] = 1.0 if (p1 and p2 and p1 != p2) else 0.0
 
+    # Postal prefix (first 2 digits: state/region in US/France/India)
+    has_p_prefix_match = bool(p1 and p2 and len(p1) >= 2 and len(p2) >= 2 and p1[:2] == p2[:2])
+    feats["postal_prefix_match"] = 1.0 if has_p_prefix_match else 0.0
+    feats["has_postal_prefix_mismatch"] = 1.0 if (p1 and p2 and len(p1) >= 2 and len(p2) >= 2 and p1[:2] != p2[:2]) else 0.0
+
     # Address token similarity
     atok1 = s1_rec.get("addr_tokens", set())
     atok2 = s23_rec.get("addr_tokens", set())
+    common_atok = atok1 & atok2
     feats["jw_clean_addr"] = jaro_winkler_sim(a1, a2) if (a1 and a2) else 0.0
     feats["token_jaccard_addr"] = token_jaccard(atok1, atok2)
     feats["token_containment_addr"] = token_containment(atok1, atok2)
+    feats["common_addr_tokens"] = float(len(common_atok))
+    feats["both_addr_present_zero_overlap"] = 1.0 if (a1 and a2 and not common_atok) else 0.0
+
+    # Address lengths
+    alen1, alen2 = len(a1), len(a2)
+    feats["addr_len_diff"] = float(abs(alen1 - alen2))
+    feats["addr_len_ratio"] = min(alen1, alen2) / max(alen1, alen2) if max(alen1, alen2) > 0 else 1.0
 
     # Street token match
     st1 = s1_rec.get("first_street_token", "")
     st2 = s23_rec.get("first_street_token", "")
     feats["exact_first_street"] = 1.0 if (st1 and st2 and st1 == st2) else 0.0
+    feats["jw_first_street"] = jaro_winkler_sim(st1, st2) if (st1 and st2) else 0.0
+
+    # Source table indicator
+    feats["is_s2"] = 1.0 if s23_rec.get("entity_id", "").startswith("S2") else 0.0
 
     # 4. Cross-Feature Interaction
     feats["cross_name_addr_sim"] = feats["jw_core_name"] * feats["jw_clean_addr"]

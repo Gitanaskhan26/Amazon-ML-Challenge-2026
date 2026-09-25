@@ -10,7 +10,12 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-import pandas as pd
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except Exception:
+    HAS_PANDAS = False
+    pd = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,12 +111,12 @@ def write_submission_tsv(
             f.write(f"{s1_id}\t{target_str}\n")
 
 
-def to_parquet_fast(df: pd.DataFrame, path: Path):
+def to_parquet_fast(df: "pd.DataFrame", path: Path):
     """Save dataframe to Parquet with snappy compression."""
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine="pyarrow", compression="snappy", index=False)
 
 
-def read_parquet_fast(path: Path) -> pd.DataFrame:
+def read_parquet_fast(path: Path) -> "pd.DataFrame":
     """Read Parquet file using pyarrow."""
     return pd.read_parquet(path, engine="pyarrow")

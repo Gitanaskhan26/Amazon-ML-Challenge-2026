@@ -149,11 +149,26 @@ def run_local_evaluation(val_dir: Path, model_path: Path, threshold: float = 0.4
         # 1-to-at-most-1 Bipartite Resolution & Thresholding
         candidate_scores.sort(key=lambda x: x[2], reverse=True)
         assigned_s23 = set()
+        s1_s2_count = defaultdict(int)
+        s1_s3_count = defaultdict(int)
         for s1_id, cid, score in candidate_scores:
             if score < threshold:
                 break
             if cid not in assigned_s23:
+                is_s2 = cid.startswith("S2")
+                if is_s2 and s1_s2_count[s1_id] >= 5:
+                    continue
+                if not is_s2 and s1_s3_count[s1_id] >= 5:
+                    continue
+                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
+                    continue
+
                 assigned_s23.add(cid)
+                if is_s2:
+                    s1_s2_count[s1_id] += 1
+                else:
+                    s1_s3_count[s1_id] += 1
+
                 if s1_id not in final_matches:
                     final_matches[s1_id] = set()
                 final_matches[s1_id].add(cid)

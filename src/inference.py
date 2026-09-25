@@ -14,6 +14,7 @@ and Linux/macOS.
 import os
 import sys
 import gc
+import json
 import argparse
 import subprocess
 from pathlib import Path
@@ -53,8 +54,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=25,
-        help="Maximum candidates per Source 1 entity in blocking stage"
+        default=35,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 35)"
     )
     parser.add_argument(
         "--model-path",
@@ -65,8 +66,8 @@ def parse_args():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.60,
-        help="Decision threshold for matching (default: 0.60)"
+        default=None,
+        help="Decision threshold for matching (default: calibrated optimal threshold or 0.58)"
     )
     parser.add_argument(
         "--validate",
@@ -116,6 +117,24 @@ def run_pipeline():
             logger.warning(f"Could not load LightGBM model: {e}. Falling back to heuristic scorer.")
     else:
         logger.info("No trained LightGBM model found. Using heuristic scoring engine.")
+
+    # Resolve Decision Threshold
+    effective_threshold = args.threshold
+    if effective_threshold is None:
+        cal_path = Path(__file__).resolve().parent.parent / "data" / "calibration_results.json"
+        if cal_path.exists():
+            try:
+                with open(cal_path, "r", encoding="utf-8") as f:
+                    cal_data = json.load(f)
+                    cal_tau = cal_data.get("optimal_threshold")
+                    if cal_tau is not None:
+                        effective_threshold = float(cal_tau)
+                        logger.info(f"Loaded calibrated optimal threshold tau = {effective_threshold:.2f} from {cal_path.name}")
+            except Exception:
+                pass
+        if effective_threshold is None:
+            effective_threshold = 0.58
+    logger.info(f"Effective Matching Threshold: {effective_threshold:.2f}")
 
     final_candidates = {}
     final_matches = {}
@@ -211,14 +230,29 @@ def run_pipeline():
 
 
         # Enforce 1-to-at-most-1 Bipartite Invariant & Calibrated Thresholding
-        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={args.threshold}) for {country}"):
+        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={effective_threshold:.2f}) for {country}"):
             candidate_scores.sort(key=lambda x: x[2], reverse=True)
             assigned_s23 = set()
+            s1_s2_count = defaultdict(int)
+            s1_s3_count = defaultdict(int)
             for s1_id, cand_id, score in candidate_scores:
-                if score < args.threshold:
+                if score < effective_threshold:
                     break  # since candidate_scores is sorted descending
                 if cand_id not in assigned_s23:
+                    is_s2 = cand_id.startswith("S2")
+                    if is_s2 and s1_s2_count[s1_id] >= 5:
+                        continue
+                    if not is_s2 and s1_s3_count[s1_id] >= 5:
+                        continue
+                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
+                        continue
+
                     assigned_s23.add(cand_id)
+                    if is_s2:
+                        s1_s2_count[s1_id] += 1
+                    else:
+                        s1_s3_count[s1_id] += 1
+
                     if s1_id not in final_matches:
                         final_matches[s1_id] = set()
                     final_matches[s1_id].add(cand_id)

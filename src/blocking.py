@@ -138,7 +138,7 @@ class BlockingEngine:
 
         # Pass 0: Exact compact core
         if compact in self.idx_exact_name:
-            cands_exact.update(self.idx_exact_name[compact][:5])
+            cands_exact.update(self.idx_exact_name[compact][:25])
 
         s1_words = s1_record.get("core_words")
         if s1_words is None:
