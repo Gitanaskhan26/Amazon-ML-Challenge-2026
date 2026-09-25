@@ -105,13 +105,18 @@ def monge_elkan_similarity(tokens1: List[str], tokens2: List[str]) -> float:
     """
     Compute asymmetric Monge-Elkan similarity from tokens1 to tokens2:
     Mean of max Jaro-Winkler similarities for each token in tokens1 across tokens2.
+    Uses an exact set membership lookup to skip fuzzy distance when token is an identical match.
     """
     if not tokens1 or not tokens2:
         return 0.0
+    s2_set = set(tokens2)
     scores = []
     for u in tokens1:
-        max_sim = max((jaro_winkler_sim(u, v) for v in tokens2), default=0.0)
-        scores.append(max_sim)
+        if u in s2_set:
+            scores.append(1.0)
+        else:
+            max_sim = max((jaro_winkler_sim(u, v) for v in tokens2), default=0.0)
+            scores.append(max_sim)
     return sum(scores) / len(scores)
 
 
