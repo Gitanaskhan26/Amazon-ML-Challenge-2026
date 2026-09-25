@@ -13,9 +13,11 @@ and Linux/macOS.
 
 import os
 import sys
+import gc
 import argparse
 import subprocess
 from pathlib import Path
+from collections import defaultdict
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -208,22 +210,32 @@ def run_pipeline():
                     candidate_scores.append((s1_id, cand_id, score))
 
 
-        # Enforce 1-to-at-most-1 Bipartite Invariant
-        with Timer(f"Enforcing 1-to-at-most-1 Conflict Resolution for {country}"):
-            assigned_mapping = solve_greedy_bipartite_assignment(candidate_scores)
-
-        # Calibrated Threshold Match Selection & Singleton Gating
-        with Timer(f"Calibrated Threshold Match Selection (tau={args.threshold}) for {country}"):
-            cand_scores_by_s1 = defaultdict(list)
+        # Enforce 1-to-at-most-1 Bipartite Invariant & Calibrated Thresholding
+        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={args.threshold}) for {country}"):
+            candidate_scores.sort(key=lambda x: x[2], reverse=True)
+            assigned_s23 = set()
             for s1_id, cand_id, score in candidate_scores:
-                cand_scores_by_s1[s1_id].append((cand_id, score))
+                if score < args.threshold:
+                    break  # since candidate_scores is sorted descending
+                if cand_id not in assigned_s23:
+                    assigned_s23.add(cand_id)
+                    if s1_id not in final_matches:
+                        final_matches[s1_id] = set()
+                    final_matches[s1_id].add(cand_id)
 
             for s1_rec in s1_preprocessed:
                 s1_id = s1_rec["entity_id"]
-                # Only consider candidates that survived conflict assignment and exceed calibrated threshold
-                survived = assigned_mapping.get(s1_id, set())
-                cand_list = [c for c, sc in cand_scores_by_s1[s1_id] if c in survived and sc >= args.threshold]
-                final_matches[s1_id] = set(cand_list)
+                if s1_id not in final_matches:
+                    final_matches[s1_id] = set()
+
+        # Free memory before next country partition
+        del candidate_scores
+        del pool_records
+        del pool_lookup
+        del pairs_to_score
+        del s1_lookup
+        del s1_preprocessed
+        gc.collect()
 
 
     # Write Deliverables
