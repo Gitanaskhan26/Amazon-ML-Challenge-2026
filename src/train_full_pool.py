@@ -466,7 +466,7 @@ def train_full_pool():
         logger.info(f">>> OPTIMAL DECISION THRESHOLD: tau* = {best_tau:.2f} (Macro-F0.5: {best_score:.4f}) <<<")
         logger.info(f"  Holdout Macro Precision: {best_metrics.get('macro_precision', 0):.4f}")
         logger.info(f"  Holdout Macro Recall:    {best_metrics.get('macro_recall', 0):.4f}")
-        logger.info(f"  Singleton F0.5 Score:    {best_metrics.get('singleton_f05', 0):.4f}")
+        logger.info(f"  Singleton F0.5 Score:    {best_metrics.get('singleton_score', 0):.4f}")
         logger.info(f"  Country Breakdown:")
         for c, sc in best_metrics.get("by_country", {}).items():
             logger.info(f"    {c}: {sc:.4f}")

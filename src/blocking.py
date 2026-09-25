@@ -43,6 +43,8 @@ class BlockingEngine:
         self.idx_num_first = defaultdict(list)
         self.idx_num_street = defaultdict(list)
         self.idx_num_post = defaultdict(list)
+        self.idx_post_name = defaultdict(list)
+        self.idx_post_street = defaultdict(list)
         self.idx_addr_rare = defaultdict(list)
         self.idx_char3 = defaultdict(list)
 
@@ -64,8 +66,8 @@ class BlockingEngine:
                     self.char3_freq[compact[i:i+3]] += 1
 
         n_records = len(pool_records)
-        self.rare_thresh = 5000
-        self.char3_thresh = min(300, max(20, int(n_records * 0.0005)))
+        self.rare_thresh = 15000
+        self.char3_thresh = min(1200, max(50, int(n_records * 0.001)))
 
         for r in pool_records:
             e_id = r["entity_id"]
@@ -104,8 +106,17 @@ class BlockingEngine:
                 for num in numbers:
                     self.idx_num_post[(num, postal)].append(e_id)
 
+            # Pass P1: (postal_code, name_token) - Crucial for Indic and US without street numbers
+            if postal:
+                for w in words[:4]:
+                    self.idx_post_name[(postal, w)].append(e_id)
+
+            # Pass P2: (postal_code, first_street_token)
+            if postal and street_tok and len(street_tok) >= 3:
+                self.idx_post_street[(postal, street_tok)].append(e_id)
+
             # Pass E: Address token pairs (critical for Indic entities where name is in native script)
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 250], key=lambda x: self.addr_token_freq[x])
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if self.addr_token_freq[a] <= 800], key=lambda x: self.addr_token_freq[x])
             if len(addr_words) >= 2:
                 self.idx_addr_rare[(addr_words[0], addr_words[1])].append(e_id)
 
@@ -135,6 +146,7 @@ class BlockingEngine:
         cands_c = set()
         cands_d = set()
         cands_e = set()
+        cands_p = set()
 
         # Pass 0: Exact compact core
         if compact in self.idx_exact_name:
@@ -176,15 +188,26 @@ class BlockingEngine:
                 if key in self.idx_num_post:
                     cands_d.update(self.idx_num_post[key][:20])
 
+        # Pass P1 & P2: Postal Code + Name Word / Street Token (ALWAYS queried when postal present)
+        if postal:
+            for w in words[:4]:
+                key = (postal, w)
+                if key in self.idx_post_name:
+                    cands_p.update(self.idx_post_name[key][:20])
+            if street_tok:
+                key = (postal, street_tok)
+                if key in self.idx_post_street:
+                    cands_p.update(self.idx_post_street[key][:20])
+
         # Pass E: Address token pairs (ALWAYS queried)
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 250], key=lambda x: self.addr_token_freq.get(x, 0))
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 800], key=lambda x: self.addr_token_freq.get(x, 0))
         if len(addr_words) >= 2:
             key = (addr_words[0], addr_words[1])
             if key in self.idx_addr_rare:
                 cands_e.update(self.idx_addr_rare[key][:20])
 
         # Pass C: Character 3-grams (fallback if total candidates < 15)
-        if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 15 and len(compact) >= 3:
+        if len(cands_exact | cands_a | cands_b | cands_d | cands_e | cands_p) < 15 and len(compact) >= 3:
             char_counts = Counter()
             tris = [compact[i:i+3] for i in range(len(compact)-2)]
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
@@ -196,7 +219,7 @@ class BlockingEngine:
                 cands_c.add(cid)
 
         # Union
-        union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e
+        union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p
 
         # Intelligent Similarity-Based Capping (preserves true matches with high similarity)
         if len(union_set) > self.adaptive_cap:
@@ -212,8 +235,9 @@ class BlockingEngine:
                 union_len = len_s1 + len(c_words) - inter
                 word_sim = inter / union_len if union_len > 0 else 0.0
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
+                post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
                 exact_bonus = 0.5 if cand in cands_exact else 0.0
-                score = 0.65 * word_sim + 0.35 * num_sim + exact_bonus
+                score = 0.50 * word_sim + 0.25 * num_sim + 0.25 * post_sim + exact_bonus
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             union_set = {cand for cand, _ in scored[:self.adaptive_cap]}
@@ -225,6 +249,7 @@ class BlockingEngine:
             "Pass_C": cands_c,
             "Pass_D": cands_d,
             "Pass_E": cands_e,
+            "Pass_P": cands_p,
         }
         return union_set, per_pass
 
