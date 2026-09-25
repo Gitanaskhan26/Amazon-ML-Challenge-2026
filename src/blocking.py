@@ -144,51 +144,68 @@ class BlockingEngine:
             s1_words = set(w for w in core_name.split() if len(w) >= 2)
             s1_record["core_words"] = s1_words
 
-        # Pass A: Rare tokens (rarest first, check up to 4, break early if >= 80 cands)
+        # Pass A: Rare tokens (rarest first, check up to 4, break early if >= 50 cands)
         words = sorted(list(s1_words), key=lambda w: self.token_freq.get(w, 0))
         for w in words[:4]:
             if self.token_freq.get(w, 0) <= self.rare_thresh and w in self.idx_rare_token:
                 cands_a.update(self.idx_rare_token[w])
-                if len(cands_a) >= 80:
+                if len(cands_a) >= 50:
                     break
 
-        # Pass A2: Bigrams
-        for i in range(len(words) - 1):
-            pair = (words[i], words[i+1])
-            if pair in self.idx_bigram:
-                cands_a.update(self.idx_bigram[pair])
+        # Pass A2: Bigrams (only if name candidates < 25)
+        if len(cands_exact | cands_a) < 25:
+            for i in range(len(words) - 1):
+                pair = (words[i], words[i+1])
+                if pair in self.idx_bigram:
+                    cands_a.update(self.idx_bigram[pair])
+                    if len(cands_exact | cands_a) >= 40:
+                        break
 
-        # Pass B: Number + any of top 3 name words / street
-        for num in numbers:
-            for w in words[:3]:
-                if (num, w) in self.idx_num_first:
-                    cands_b.update(self.idx_num_first[(num, w)])
-            if street_tok and (num, street_tok) in self.idx_num_street:
-                cands_b.update(self.idx_num_street[(num, street_tok)])
-
-        # Pass D: Number + postal
-        if postal:
+        # Pass B & D: Address & Street fallbacks (only if candidates < 20)
+        # Non-discriminative collisions (e.g. 100 Main St across cities) are guarded with size <= 50
+        if len(cands_exact | cands_a) < 20:
             for num in numbers:
-                key = (num, postal)
-                if key in self.idx_num_post:
-                    cands_d.update(self.idx_num_post[key])
+                for w in words[:3]:
+                    key = (num, w)
+                    if key in self.idx_num_first:
+                        plist = self.idx_num_first[key]
+                        if len(plist) <= 50:
+                            cands_b.update(plist)
+                if street_tok:
+                    key = (num, street_tok)
+                    if key in self.idx_num_street:
+                        plist = self.idx_num_street[key]
+                        if len(plist) <= 50:
+                            cands_b.update(plist)
 
-        # Pass E: Address token pairs (Indic entities)
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 100], key=lambda x: self.addr_token_freq.get(x, 0))
-        if len(addr_words) >= 2:
-            key = (addr_words[0], addr_words[1])
-            if key in self.idx_addr_rare:
-                cands_e.update(self.idx_addr_rare[key])
+            if postal:
+                for num in numbers:
+                    key = (num, postal)
+                    if key in self.idx_num_post:
+                        plist = self.idx_num_post[key]
+                        if len(plist) <= 50:
+                            cands_d.update(plist)
 
-        # Pass C: Character 3-grams (if candidates < 15, query top 3 rarest 3-grams)
+            # Pass E: Address token pairs (Indic entities)
+            addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if self.addr_token_freq.get(a, 0) <= 80], key=lambda x: self.addr_token_freq.get(x, 0))
+            if len(addr_words) >= 2:
+                key = (addr_words[0], addr_words[1])
+                if key in self.idx_addr_rare:
+                    plist = self.idx_addr_rare[key]
+                    if len(plist) <= 50:
+                        cands_e.update(plist)
+
+        # Pass C: Character 3-grams (deep fallback if candidates < 15)
         if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 15 and len(compact) >= 3:
             char_counts = Counter()
             tris = [compact[i:i+3] for i in range(len(compact)-2)]
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
             for tri in tris[:3]:
                 if self.char3_freq.get(tri, 0) <= self.char3_thresh and tri in self.idx_char3:
-                    for cid in self.idx_char3[tri]:
-                        char_counts[cid] += 1
+                    plist = self.idx_char3[tri]
+                    if len(plist) <= 50:
+                        for cid in plist:
+                            char_counts[cid] += 1
             for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
 
