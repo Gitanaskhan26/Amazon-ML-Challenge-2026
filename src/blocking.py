@@ -111,9 +111,9 @@ class BlockingEngine:
                     self.idx_num_street[(num, street_tok)].append(e_id)
 
             # Pass B3: (street_number, rare_addr_token) - Crucial for non-Latin names and messy road names
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 3000], key=lambda x: self.addr_token_freq[x])
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 8000], key=lambda x: self.addr_token_freq[x])
             for num in numbers:
-                for a in addr_words[:3]:
+                for a in addr_words[:5]:
                     self.idx_num_addr[(num, a)].append(e_id)
 
             # Pass D: (street_number, postal_code)
@@ -195,7 +195,7 @@ class BlockingEngine:
                     cands_a.update(self.idx_name_pair[pair][:20])
 
         # Pass B, B2, B3: Street Number + Word / Street / Rare Addr Token
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 3000], key=lambda x: self.addr_token_freq.get(x, 0))
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 8000], key=lambda x: self.addr_token_freq.get(x, 0))
         for num in numbers:
             for w in words[:3]:
                 key = (num, w)
@@ -205,7 +205,7 @@ class BlockingEngine:
                 key = (num, street_tok)
                 if key in self.idx_num_street:
                     cands_b.update(self.idx_num_street[key][:20])
-            for a in addr_words[:3]:
+            for a in addr_words[:5]:
                 key = (num, a)
                 if key in self.idx_num_addr:
                     cands_b.update(self.idx_num_addr[key][:20])
@@ -253,6 +253,7 @@ class BlockingEngine:
         # Intelligent Similarity-Based Capping (preserves true matches with high similarity)
         if len(union_set) > self.adaptive_cap:
             s1_nums = numbers
+            s1_addr_toks = s1_record.get("addr_tokens", set())
             len_s1 = len(s1_words)
             scored = []
             for cand in union_set:
@@ -263,12 +264,29 @@ class BlockingEngine:
                 inter = len(s1_words & c_words)
                 union_len = len_s1 + len(c_words) - inter
                 word_sim = inter / union_len if union_len > 0 else 0.0
+
+                c_addr_toks = r.get("addr_tokens", set())
+                addr_inter = len(s1_addr_toks & c_addr_toks)
+                addr_union = len(s1_addr_toks | c_addr_toks)
+                addr_sim = addr_inter / addr_union if addr_union > 0 else 0.0
+
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
                 exact_bonus = 0.50 if cand in cands_exact else 0.0
                 pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
-                multi_word_bonus = 0.30 if inter >= 2 else 0.0
-                score = 0.35 * word_sim + 0.20 * num_sim + 0.15 * post_sim + exact_bonus + pass_bonus + multi_word_bonus
+                multi_word_bonus = 0.35 if inter >= 2 else 0.0
+                multi_addr_bonus = 0.45 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
+
+                score = (
+                    0.25 * word_sim
+                    + 0.25 * addr_sim
+                    + 0.15 * num_sim
+                    + 0.10 * post_sim
+                    + exact_bonus
+                    + pass_bonus
+                    + multi_word_bonus
+                    + multi_addr_bonus
+                )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             union_set = {cand for cand, _ in scored[:self.adaptive_cap]}
