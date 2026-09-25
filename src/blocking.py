@@ -93,12 +93,14 @@ class BlockingEngine:
             for i in range(len(words) - 1):
                 self.idx_bigram[(words[i], words[i+1])].append(e_id)
 
-            # Pass A3: Unordered Rare Name Pairs (robust to reordering and token insertions)
-            rare_words = sorted([w for w in words if self.token_freq[w] <= 8000], key=lambda w: self.token_freq[w])
-            for i in range(min(4, len(rare_words))):
-                for j in range(i + 1, min(4, len(rare_words))):
-                    pair = (rare_words[i], rare_words[j]) if rare_words[i] < rare_words[j] else (rare_words[j], rare_words[i])
-                    self.idx_name_pair[pair].append(e_id)
+            # Pass A3: Unordered Rare Name Pairs (robust to reordering, typos in 3rd word, token insertions)
+            clean_words = sorted([w for w in words if len(w) >= 2], key=lambda w: self.token_freq[w])
+            for i in range(min(4, len(clean_words))):
+                for j in range(i + 1, min(4, len(clean_words))):
+                    w1, w2 = clean_words[i], clean_words[j]
+                    if min(self.token_freq[w1], self.token_freq[w2]) <= 12000:
+                        pair = (w1, w2) if w1 < w2 else (w2, w1)
+                        self.idx_name_pair[pair].append(e_id)
 
             # Pass B: (street_number, name_token)
             for num in numbers:
@@ -188,12 +190,14 @@ class BlockingEngine:
                 cands_a.update(self.idx_bigram[pair][:20])
 
         # Pass A3: Unordered Rare Name Pairs (vital for word reordering / extra words)
-        rare_words = sorted([w for w in words if self.token_freq.get(w, 0) <= 8000], key=lambda w: self.token_freq.get(w, 0))
-        for i in range(min(4, len(rare_words))):
-            for j in range(i + 1, min(4, len(rare_words))):
-                pair = (rare_words[i], rare_words[j]) if rare_words[i] < rare_words[j] else (rare_words[j], rare_words[i])
-                if pair in self.idx_name_pair:
-                    cands_a.update(self.idx_name_pair[pair][:20])
+        clean_words = sorted([w for w in words if len(w) >= 2], key=lambda w: self.token_freq.get(w, 0))
+        for i in range(min(4, len(clean_words))):
+            for j in range(i + 1, min(4, len(clean_words))):
+                w1, w2 = clean_words[i], clean_words[j]
+                if min(self.token_freq.get(w1, 0), self.token_freq.get(w2, 0)) <= 12000:
+                    pair = (w1, w2) if w1 < w2 else (w2, w1)
+                    if pair in self.idx_name_pair:
+                        cands_a.update(self.idx_name_pair[pair][:20])
 
         # Pass B, B2, B3: Street Number + Word / Street / Rare Addr Token
         addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 50000], key=lambda x: self.addr_token_freq.get(x, 0))

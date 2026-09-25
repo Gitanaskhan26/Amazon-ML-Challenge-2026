@@ -123,10 +123,16 @@ def guarded_leet_reverse(token: str) -> str:
             chars[i] = 'o'
         elif c == '3':
             chars[i] = 'e'
-        elif c == '5':
+        elif c == '5' or c == '$':
             chars[i] = 's'
-        elif c == '@':
+        elif c == '8':
+            chars[i] = 'b'
+        elif c == '4' or c == '@':
             chars[i] = 'a'
+        elif c == '7':
+            chars[i] = 't'
+        elif c == '9':
+            chars[i] = 'g'
     return "".join(chars)
 
 
