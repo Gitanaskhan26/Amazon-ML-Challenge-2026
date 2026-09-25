@@ -170,56 +170,58 @@ def run_pipeline():
             })
 
 
-        # Candidate Retrieval & Pairwise Scoring
-        candidate_scores = []
-        with Timer(f"Blocking & Scoring {len(s1_preprocessed):,} S1 entities in {country}"):
-            for s1_rec in tqdm(s1_preprocessed, desc=f"Inference ({country})"):
+        # 1. Fast Candidate Retrieval (Pure Inverted Index, ~2,000+ it/s)
+        s1_lookup = {r["entity_id"]: r for r in s1_preprocessed}
+        pairs_to_score = []
+
+        with Timer(f"Candidate Retrieval for {len(s1_preprocessed):,} S1 entities in {country}"):
+            for s1_rec in tqdm(s1_preprocessed, desc=f"Blocking ({country})"):
                 s1_id = s1_rec["entity_id"]
                 cands, _ = engine.retrieve_candidates_for_s1(s1_rec)
                 final_candidates[s1_id] = cands
+                for cand_id in cands:
+                    if cand_id in pool_lookup:
+                        pairs_to_score.append((s1_id, cand_id))
 
-                if not cands:
-                    continue
+        logger.info(f"Total candidate pairs to score for {country}: {len(pairs_to_score):,}")
 
-                if booster is not None:
-                    # Model-based scoring
+        # 2. Batched Scoring with LightGBM (chunks of 100,000 pairs!)
+        candidate_scores = []
+        with Timer(f"Batched Scoring of {len(pairs_to_score):,} pairs in {country}"):
+            if booster is not None:
+                batch_size = 100000
+                for start_idx in tqdm(range(0, len(pairs_to_score), batch_size), desc=f"Scoring Batches ({country})"):
+                    batch_pairs = pairs_to_score[start_idx : start_idx + batch_size]
                     feat_matrix = []
-                    valid_cands = []
-                    for cand_id in cands:
-                        if cand_id in pool_lookup:
-                            feats = extract_pair_features(s1_rec, pool_lookup[cand_id])
-                            feat_matrix.append([feats.get(k, 0.0) for k in feature_names])
-                            valid_cands.append(cand_id)
-                    if feat_matrix:
-                        probs = booster.predict(np.array(feat_matrix, dtype=np.float32))
-                        for cand_id, prob in zip(valid_cands, probs):
-                            candidate_scores.append((s1_id, cand_id, float(prob)))
-                else:
-                    # Fast heuristic scoring
-                    for cand_id in cands:
-                        if cand_id in pool_lookup:
-                            score = heuristic_score_pair(s1_rec, pool_lookup[cand_id])
-                            candidate_scores.append((s1_id, cand_id, score))
+                    for s1_id, cand_id in batch_pairs:
+                        feats = extract_pair_features(s1_lookup[s1_id], pool_lookup[cand_id])
+                        feat_matrix.append([feats.get(k, 0.0) for k in feature_names])
+
+                    probs = booster.predict(np.array(feat_matrix, dtype=np.float32))
+                    for (s1_id, cand_id), prob in zip(batch_pairs, probs):
+                        candidate_scores.append((s1_id, cand_id, float(prob)))
+            else:
+                for s1_id, cand_id in pairs_to_score:
+                    score = heuristic_score_pair(s1_lookup[s1_id], pool_lookup[cand_id])
+                    candidate_scores.append((s1_id, cand_id, score))
+
 
         # Enforce 1-to-at-most-1 Bipartite Invariant
         with Timer(f"Enforcing 1-to-at-most-1 Conflict Resolution for {country}"):
             assigned_mapping = solve_greedy_bipartite_assignment(candidate_scores)
 
-        # Per-Entity Expected F0.5 Prefix Selection & Singleton Gating
-        with Timer(f"Optimizing Expected-F0.5 Prefix Selection for {country}"):
+        # Calibrated Threshold Match Selection & Singleton Gating
+        with Timer(f"Calibrated Threshold Match Selection (tau={args.threshold}) for {country}"):
             cand_scores_by_s1 = defaultdict(list)
             for s1_id, cand_id, score in candidate_scores:
                 cand_scores_by_s1[s1_id].append((cand_id, score))
 
             for s1_rec in s1_preprocessed:
                 s1_id = s1_rec["entity_id"]
-                # Only consider candidates that survived conflict assignment and exceed threshold
+                # Only consider candidates that survived conflict assignment and exceed calibrated threshold
                 survived = assigned_mapping.get(s1_id, set())
-                cand_list = [(c, sc) for c, sc in cand_scores_by_s1[s1_id] if c in survived and sc >= args.threshold]
-
-                # Select optimal prefix (prunes singletons to [])
-                selected_matches = select_optimal_prefix_per_entity(cand_list)
-                final_matches[s1_id] = selected_matches
+                cand_list = [c for c, sc in cand_scores_by_s1[s1_id] if c in survived and sc >= args.threshold]
+                final_matches[s1_id] = set(cand_list)
 
 
     # Write Deliverables

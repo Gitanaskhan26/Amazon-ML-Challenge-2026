@@ -46,9 +46,10 @@ class BlockingEngine:
         self.idx_addr_rare = defaultdict(set)
         self.idx_char3 = defaultdict(set)
 
-        # Token frequencies
+        # Token and 3-gram frequencies
         self.token_freq = Counter()
         self.addr_token_freq = Counter()
+        self.char3_freq = Counter()
         for r in pool_records:
             for w in r["core_name"].split():
                 if len(w) >= 2:
@@ -56,15 +57,19 @@ class BlockingEngine:
             for a in r.get("addr_tokens", set()):
                 if len(a) >= 3:
                     self.addr_token_freq[a] += 1
+            compact = r["core_name"].replace(" ", "")
+            if len(compact) >= 3:
+                for i in range(len(compact) - 2):
+                    self.char3_freq[compact[i:i+3]] += 1
 
         n_records = len(pool_records)
         rare_thresh = max(100, int(n_records * 0.003))
+        char3_thresh = max(100, int(n_records * 0.002))
 
         for r in pool_records:
             e_id = r["entity_id"]
             core_name = r["core_name"]
             compact = core_name.replace(" ", "")
-            first_tok = r["first_token"]
             numbers = r["street_numbers"]
             postal = r["postal_code"]
             street_tok = r["first_street_token"]
@@ -103,10 +108,12 @@ class BlockingEngine:
             if len(addr_words) >= 2:
                 self.idx_addr_rare[(addr_words[0], addr_words[1])].add(e_id)
 
-            # Pass C: Character 3-grams
+            # Pass C: Character 3-grams (filtered for speed)
             if len(compact) >= 3:
                 for i in range(len(compact) - 2):
-                    self.idx_char3[compact[i:i+3]].add(e_id)
+                    tri = compact[i:i+3]
+                    if self.char3_freq[tri] <= char3_thresh:
+                        self.idx_char3[tri].add(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
@@ -152,7 +159,6 @@ class BlockingEngine:
             if street_tok and (num, street_tok) in self.idx_num_street:
                 cands_b.update(self.idx_num_street[(num, street_tok)])
 
-
         # Pass D: Number + postal
         if postal:
             for num in numbers:
@@ -167,16 +173,18 @@ class BlockingEngine:
             if key in self.idx_addr_rare:
                 cands_e.update(self.idx_addr_rare[key])
 
-        # Pass C: Character 3-grams (if candidates < 25)
-        if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 25 and len(compact) >= 3:
+        # Pass C: Character 3-grams (if candidates < 20, query top 3 rarest 3-grams)
+        if len(cands_exact | cands_a | cands_b | cands_d | cands_e) < 20 and len(compact) >= 3:
             char_counts = Counter()
-            for i in range(len(compact) - 2):
-                tri = compact[i:i+3]
+            tris = [compact[i:i+3] for i in range(len(compact)-2)]
+            tris.sort(key=lambda t: self.char3_freq.get(t, 0))
+            for tri in tris[:3]:
                 if tri in self.idx_char3:
                     for cid in self.idx_char3[tri]:
                         char_counts[cid] += 1
-            for cid, _ in char_counts.most_common(15):
+            for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
+
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e
