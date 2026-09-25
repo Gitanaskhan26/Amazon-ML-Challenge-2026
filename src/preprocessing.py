@@ -35,7 +35,7 @@ LEGAL_SUFFIXES = [
     # US / UK / General
     "limited liability company", "incorporated", "corporation", "private limited",
     "public limited", "pvt ltd", "pvt", "ltd", "inc", "corp", "llc", "llp",
-    "company", "co", "services", "enterprises", "solutions", "group", "holdings",
+    "private", "limited", "company", "co", "services", "enterprises", "solutions", "group", "holdings",
     "consulting", "ventures", "management", "associates",
     # France (Zero-shot in test)
     "societe a responsabilite limitee", "societe par actions simplifiee",
@@ -198,8 +198,8 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     if len(core_str) < 2:
         core_str = norm_str
 
-    # Strip honorary business prefixes at START (m/s, messrs, shree, shri, sri)
-    clean_prefix = re.sub(r"^(m\s*/\s*s|messrs|shree|shri|sri|om|smt)\b\s*", "", core_str, flags=re.IGNORECASE).strip()
+    # Strip honorary business prefixes at START (m/s, messrs, shree, shri, sri, mr, mrs, ms, dr, prof)
+    clean_prefix = re.sub(r"^(m\s*/\s*s|messrs|shree|shri|sri|om|smt|mr|mrs|ms|dr|prof)\b\s*", "", core_str, flags=re.IGNORECASE).strip()
     if len(clean_prefix) >= 2:
         core_str = clean_prefix
 
