@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 # Add repository root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.utils import Timer, logger, write_submission_tsv
+from src.utils import Timer, logger, write_submission_tsv, find_file
 
 
 def parse_args():
@@ -32,7 +32,7 @@ def parse_args():
         "--data-dir",
         type=str,
         default="/Users/anaskhan/Downloads/student_resource/dataset/train",
-        help="Path to training dataset directory containing train_source*.tsv and train_ground_truth.tsv"
+        help="Path to training dataset directory containing source1, source2, source3, and ground_truth files"
     )
     parser.add_argument(
         "--output-dir",
@@ -56,15 +56,13 @@ def parse_args():
 
 
 def load_s1_and_gt(data_dir: Path) -> Tuple[pd.DataFrame, Dict[str, Set[str]]]:
-    """Load S1 entity metadata and ground truth matches."""
-    logger.info("Loading train_source1.tsv and train_ground_truth.tsv...")
-    s1_path = data_dir / "train_source1.tsv"
-    gt_path = data_dir / "train_ground_truth.tsv"
+    """Load S1 entity metadata and ground truth matches, auto-detecting file names."""
+    logger.info("Locating source1 and ground_truth files...")
+    s1_path = find_file(data_dir, ["train_source1.tsv", "source1.tsv", "train_source_1.tsv", "source_1.tsv"])
+    gt_path = find_file(data_dir, ["train_ground_truth.tsv", "ground_truth.tsv", "groundtruth.tsv", "train_groundtruth.tsv"])
+    logger.info(f"Using S1 file: {s1_path.name}")
+    logger.info(f"Using GT file: {gt_path.name}")
 
-    if not s1_path.exists():
-        raise FileNotFoundError(f"Missing {s1_path}")
-    if not gt_path.exists():
-        raise FileNotFoundError(f"Missing {gt_path}")
 
     # Read S1
     df_s1 = pd.read_csv(s1_path, sep="\t", dtype=str)
@@ -165,9 +163,10 @@ def create_split():
 
     # Stream S2 and S3 to extract targets + distractors
     for src_name, needed_set, n_dist in [("source2", needed_s2, n_distractors_s2), ("source3", needed_s3, n_distractors_s3)]:
-        src_path = data_dir / f"train_{src_name}.tsv"
+        src_path = find_file(data_dir, [f"train_{src_name}.tsv", f"{src_name}.tsv", f"train_{src_name[:6]}_{src_name[6:]}.tsv", f"{src_name[:6]}_{src_name[6:]}.tsv"])
         out_src_path = out_dir / f"val_{src_name}.tsv"
-        logger.info(f"Filtering {src_name} for validation pool...")
+        logger.info(f"Filtering {src_name} ({src_path.name}) for validation pool...")
+
 
         matched_rows = []
         candidate_distractors = []

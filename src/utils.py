@@ -20,6 +20,21 @@ logging.basicConfig(
 logger = logging.getLogger("ER")
 
 
+def find_file(directory: Path, candidate_names: List[str]) -> Path:
+    """Find the first matching file among candidate names in a directory (case-insensitive)."""
+    for name in candidate_names:
+        p = directory / name
+        if p.exists():
+            return p
+    # Try case-insensitive search
+    dir_files = {f.name.lower(): f for f in directory.iterdir() if f.is_file()} if directory.exists() else {}
+    for name in candidate_names:
+        if name.lower() in dir_files:
+            return dir_files[name.lower()]
+    raise FileNotFoundError(f"None of {candidate_names} found in {directory}")
+
+
+
 class Timer:
     """Context manager for timing execution blocks."""
     def __init__(self, description: str):

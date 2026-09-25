@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 # Add repository root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from src.utils import Timer, logger, write_submission_tsv
+from src.utils import Timer, logger, write_submission_tsv, find_file
 from src.preprocessing import clean_name_multiview, clean_address_multiview
 from src.blocking import BlockingEngine
 from src.train import (
@@ -67,16 +67,10 @@ def run_pipeline():
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    s1_path = test_dir / "test_source1.tsv"
-    s2_path = test_dir / "test_source2.tsv"
-    s3_path = test_dir / "test_source3.tsv"
+    s1_path = find_file(test_dir, ["test_source1.tsv", "source1.tsv", "test_source_1.tsv", "source_1.tsv"])
+    s2_path = find_file(test_dir, ["test_source2.tsv", "source2.tsv", "test_source_2.tsv", "source_2.tsv"])
+    s3_path = find_file(test_dir, ["test_source3.tsv", "source3.tsv", "test_source_3.tsv", "source_3.tsv"])
 
-    if not s1_path.exists():
-        raise FileNotFoundError(f"Missing {s1_path}")
-    if not s2_path.exists():
-        raise FileNotFoundError(f"Missing {s2_path}")
-    if not s3_path.exists():
-        raise FileNotFoundError(f"Missing {s3_path}")
 
     logger.info("=== Starting Business Entity Resolution Pipeline ===")
     logger.info(f"Test Directory: {test_dir}")
