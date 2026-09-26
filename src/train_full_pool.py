@@ -578,7 +578,8 @@ def train_full_pool():
 
         logger.info("=" * 60)
         logger.info(f">>> GLOBAL OPTIMAL THRESHOLD: tau* = {best_tau:.2f} (Macro-F0.5: {best_score:.4f}) <<<")
-        logger.info(f">>> COUNTRY-SPECIFIC THRESHOLDS: US tau* = {best_tau_us:.2f} ({best_score_us:.4f}), India tau* = {best_tau_in:.2f} ({best_score_in:.4f}) <<<")
+        france_tau = round(max(best_tau_us, best_tau_in) + 0.05, 2)
+        logger.info(f">>> COUNTRY-SPECIFIC THRESHOLDS: US tau* = {best_tau_us:.2f} ({best_score_us:.4f}), India tau* = {best_tau_in:.2f} ({best_score_in:.4f}), France tau* = {france_tau:.2f} (zero-shot conservative) <<<")
         logger.info(f">>> COMBINED MACRO-F0.5 WITH COUNTRY THRESHOLDS: {res_combined['macro_f05']:.4f} <<<")
         logger.info(f"  Combined Macro Precision: {res_combined.get('macro_precision', 0):.4f}")
         logger.info(f"  Combined Macro Recall:    {res_combined.get('macro_recall', 0):.4f}")
@@ -595,7 +596,7 @@ def train_full_pool():
                 "optimal_thresholds_by_country": {
                     "US": best_tau_us,
                     "India": best_tau_in,
-                    "France": best_tau_us
+                    "France": round(max(best_tau_us, best_tau_in) + 0.05, 2)
                 },
                 "macro_f05": res_combined["macro_f05"],
                 "metrics": res_combined,
