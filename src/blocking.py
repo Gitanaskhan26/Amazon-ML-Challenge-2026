@@ -295,11 +295,28 @@ class BlockingEngine:
                 )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
-            # Guarantee all exact core name matches are immune to capping pruning!
-            protected_exact = union_set & cands_exact
-            remaining = [c for c, _ in scored if c not in protected_exact]
-            slots_left = max(0, self.adaptive_cap - len(protected_exact))
-            union_set = protected_exact | set(remaining[:slots_left])
+
+            # Balanced allocation:
+            # 1. Protect top exact matches, but cap at min(15, adaptive_cap // 3) so common names don't starve address matches
+            max_exact_slots = min(15, max(5, self.adaptive_cap // 3))
+            exact_candidates = [c for c, _ in scored if c in cands_exact][:max_exact_slots]
+            protected_set = set(exact_candidates)
+
+            # 2. Protect top address / spatial matches (candidates with shared street number or multi-addr match)
+            max_spatial_slots = min(15, max(5, self.adaptive_cap // 3))
+            spatial_candidates = [
+                c for c, _ in scored 
+                if c not in protected_set and (
+                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums)
+                    or len(self.pool_lookup.get(c, {}).get("addr_tokens", set()) & s1_addr_toks) >= 2
+                )
+            ][:max_spatial_slots]
+            protected_set.update(spatial_candidates)
+
+            # 3. Fill remaining slots with the highest scoring candidates overall
+            remaining = [c for c, _ in scored if c not in protected_set]
+            slots_left = max(0, self.adaptive_cap - len(protected_set))
+            union_set = protected_set | set(remaining[:slots_left])
 
         per_pass = {
             "Pass_Exact": cands_exact,
