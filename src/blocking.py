@@ -162,11 +162,6 @@ class BlockingEngine:
                     tri = skel[i:i+3]
                     if self.skel3_freq[tri] <= 8000:
                         self.idx_skel3[tri].append(e_id)
-            for w in core_toks:
-                if len(w) >= 3:
-                    w_skel = consonant_skeleton(w)
-                    if len(w_skel) >= 3 and w_skel != skel:
-                        self.idx_skel_exact[w_skel].append(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
@@ -289,12 +284,6 @@ class BlockingEngine:
                 if tri in self.idx_skel3:
                     cands_sk.update(self.idx_skel3[tri][:25])
 
-        for w in core_toks:
-            if len(w) >= 3:
-                w_skel = consonant_skeleton(w)
-                if len(w_skel) >= 3 and w_skel in self.idx_skel_exact:
-                    cands_sk.update(self.idx_skel_exact[w_skel][:20])
-
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
 
@@ -326,12 +315,15 @@ class BlockingEngine:
                 multi_word_bonus = 0.35 if inter >= 2 else 0.0
                 multi_addr_bonus = 0.45 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
 
-                # Compound Anchor: Physical doorstep (street num or postal) + Name/Skeleton + Locality/City
-                compound_anchor = (
-                    (num_sim == 1.0 and (inter >= 1 or cand in cands_sk) and addr_inter >= 1)
-                    or (post_sim == 1.0 and (inter >= 1 or cand in cands_sk) and addr_inter >= 1)
+                # Doorstep Physical Address Match: Direct physical co-location
+                # Shared street number + >= 2 addr tokens, OR >= 4 addr tokens, OR same street num + same postal
+                doorstep_match = (
+                    (num_sim == 1.0 and addr_inter >= 2)
+                    or (addr_inter >= 4)
+                    or (num_sim == 1.0 and post_sim == 1.0)
+                    or (post_sim == 1.0 and addr_inter >= 2)
                 )
-                compound_bonus = 0.60 if compound_anchor else 0.0
+                doorstep_bonus = 0.85 if doorstep_match else 0.0
 
                 score = (
                     0.25 * word_sim
@@ -343,30 +335,30 @@ class BlockingEngine:
                     + multi_word_bonus
                     + multi_addr_bonus
                     + skel_bonus
-                    + compound_bonus
+                    + doorstep_bonus
                 )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Balanced 4-Tier Slot Allocation:
-            # Tier 1: Compound Anchor Matches (physical doorstep + name word/skeleton + locality)
-            max_compound_slots = min(15, max(5, self.adaptive_cap // 3))
-            compound_candidates = [
+            # Balanced Allocation:
+            # Tier 1: Doorstep Physical Address Matches (Direct physical co-location)
+            doorstep_candidates = [
                 c for c, _ in scored
                 if (
-                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk) and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
-                    or (postal and self.pool_lookup.get(c, {}).get("postal_code") == postal and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk) and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
+                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 2)
+                    or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 4
+                    or (postal and self.pool_lookup.get(c, {}).get("postal_code") == postal and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 2)
                 )
-            ][:max_compound_slots]
-            protected_set = set(compound_candidates)
+            ][:15]
+            protected_set = set(doorstep_candidates)
 
             # Tier 2: Exact Name Matches
-            max_exact_slots = min(12, max(4, self.adaptive_cap // 4))
+            max_exact_slots = min(15, max(5, self.adaptive_cap // 3))
             exact_candidates = [c for c, _ in scored if c in cands_exact and c not in protected_set][:max_exact_slots]
             protected_set.update(exact_candidates)
 
             # Tier 3: Spatial / Address / Skeleton Matches
-            max_spatial_slots = min(12, max(4, self.adaptive_cap // 4))
+            max_spatial_slots = min(10, max(3, self.adaptive_cap // 5))
             spatial_candidates = [
                 c for c, _ in scored 
                 if c not in protected_set and (
