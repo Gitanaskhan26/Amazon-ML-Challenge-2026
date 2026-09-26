@@ -19,9 +19,9 @@ from src.blocking import BlockingEngine
 from src.utils import Timer, logger, find_file
 
 
-def diagnose(train_dir_path: str, sample_s1: int = 2000):
+def diagnose(train_dir_path: str, sample_s1: int = 2000, adaptive_cap: int = 50):
     train_dir = Path(train_dir_path).resolve()
-    logger.info(f"=== Diagnosing Blocking False Negatives on {train_dir} ===")
+    logger.info(f"=== Diagnosing Blocking False Negatives on {train_dir} (Adaptive Cap = {adaptive_cap}) ===")
 
     # 1. Load S1
     s1_file = find_file(train_dir, ["train_source1.tsv", "source1.tsv"])
@@ -91,7 +91,7 @@ def diagnose(train_dir_path: str, sample_s1: int = 2000):
     pool_lookup = {r["entity_id"]: r for r in pool_records}
 
     # 3. Build Blocking Engine
-    engine = BlockingEngine(adaptive_cap=50)
+    engine = BlockingEngine(adaptive_cap=adaptive_cap)
     engine.build_indexes(pool_records)
 
     # 4. Preprocess S1
@@ -113,27 +113,48 @@ def diagnose(train_dir_path: str, sample_s1: int = 2000):
     # 5. Check misses
     missed_pairs = []
     total_true_checked = 0
+    raw_retrieved_count = 0
+    capped_retrieved_count = 0
+    missed_due_to_capping = 0
+    missed_due_to_index = 0
+
     for s1_rec in s1_preprocessed:
         s1_id = s1_rec["entity_id"]
-        cands, _ = engine.retrieve_candidates_for_s1(s1_rec)
+        cands, per_pass = engine.retrieve_candidates_for_s1(s1_rec)
+        raw_cands = set().union(*per_pass.values())
         gt_targets = gt_map.get(s1_id, set()) & found_targets
         for tgt in gt_targets:
             total_true_checked += 1
-            if tgt not in cands:
-                missed_pairs.append((s1_rec, pool_lookup[tgt]))
+            in_raw = tgt in raw_cands
+            in_capped = tgt in cands
+            if in_raw:
+                raw_retrieved_count += 1
+            if in_capped:
+                capped_retrieved_count += 1
+            else:
+                missed_pairs.append((s1_rec, pool_lookup[tgt], in_raw))
+                if in_raw:
+                    missed_due_to_capping += 1
+                else:
+                    missed_due_to_index += 1
 
-    recall = (total_true_checked - len(missed_pairs)) / total_true_checked if total_true_checked > 0 else 0
+    raw_recall = raw_retrieved_count / total_true_checked if total_true_checked > 0 else 0
+    capped_recall = capped_retrieved_count / total_true_checked if total_true_checked > 0 else 0
+
     logger.info(f"\n============================================================")
-    logger.info(f"DIAGNOSTIC BLOCKING RESULTS ON SAMPLE:")
-    logger.info(f"Total True Pairs Evaluated: {total_true_checked}")
-    logger.info(f"True Pairs Retrieved:      {total_true_checked - len(missed_pairs)} ({recall*100:.2f}%)")
-    logger.info(f"True Pairs Missed:         {len(missed_pairs)} ({(1-recall)*100:.2f}%)")
+    logger.info(f"DIAGNOSTIC BLOCKING RESULTS ON SAMPLE (Cap = {adaptive_cap}):")
+    logger.info(f"Total True Pairs Evaluated:                 {total_true_checked}")
+    logger.info(f"Raw Recall (Before Capping - All Passes):   {raw_retrieved_count} ({raw_recall*100:.2f}%)")
+    logger.info(f"Capped Recall (After Cap {adaptive_cap}):             {capped_retrieved_count} ({capped_recall*100:.2f}%)")
+    logger.info(f"Missed PURELY DUE TO CAPPING:                 {missed_due_to_capping} ({(missed_due_to_capping/total_true_checked)*100:.2f}%)")
+    logger.info(f"Missed by Inverted Index (True Gap):        {missed_due_to_index} ({(missed_due_to_index/total_true_checked)*100:.2f}%)")
     logger.info(f"============================================================\n")
 
     # Forensic Analysis of first 15 misses
     print("--- DETAILED FORENSIC AUDIT OF MISSED TRUE MATCHES ---")
-    for i, (s1, tgt) in enumerate(missed_pairs[:15], 1):
-        print(f"\n[MISSED PAIR #{i}]")
+    for i, (s1, tgt, in_raw) in enumerate(missed_pairs[:15], 1):
+        status = "[DROPPED BY CAPPING]" if in_raw else "[MISSED BY ALL PASSES]"
+        print(f"\n[MISSED PAIR #{i}]  {status}")
         print(f"  S1 ID:          {s1['entity_id']}")
         print(f"  S1 Name (raw):  {s1.get('raw_name', '')}")
         print(f"  S1 Core Name:   {s1['core_name']}")
@@ -161,5 +182,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-dir", type=str, default="./dataset/train")
     parser.add_argument("--sample-s1", type=int, default=2000)
+    parser.add_argument("--adaptive-cap", type=int, default=50)
     args = parser.parse_args()
-    diagnose(args.train_dir, args.sample_s1)
+    diagnose(args.train_dir, args.sample_s1, args.adaptive_cap)
