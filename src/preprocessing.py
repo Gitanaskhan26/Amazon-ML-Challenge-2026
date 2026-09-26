@@ -31,10 +31,14 @@ from src.utils import Timer, logger
 
 # 1. Universal Legal Suffixes (US, India, and France)
 LEGAL_SUFFIXES = [
-    # US / UK / India
+    # US / UK / India Legal forms
     "limited liability company", "incorporated", "corporation",
     "private limited", "public limited", "private ltd", "pvt limited", "pvt ltd",
     "pvt", "ltd", "inc", "corp", "llc", "llp", "private", "limited", "company", "co",
+    # Synthetic noise descriptors swapped with legal suffixes
+    "services", "enterprises", "solutions", "consulting", "ventures", "associates", "group", "holdings",
+    # Spaced acronyms
+    "l l p", "p v t", "l t d", "i n c", "l l c",
     # France (Zero-shot in test)
     "societe a responsabilite limitee", "societe par actions simplifiee",
     "societe civile immobiliere", "entreprise unipersonnelle a responsabilite limitee",
