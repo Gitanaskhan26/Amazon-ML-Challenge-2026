@@ -48,11 +48,13 @@ class BlockingEngine:
         self.idx_post_street = defaultdict(list)
         self.idx_addr_rare = defaultdict(list)
         self.idx_char3 = defaultdict(list)
+        self.idx_skel3 = defaultdict(list)
 
         # Token and 3-gram frequencies
         self.token_freq = Counter()
         self.addr_token_freq = Counter()
         self.char3_freq = Counter()
+        self.skel3_freq = Counter()
         for r in pool_records:
             if "core_words" not in r:
                 r["core_words"] = set(w for w in r["core_name"].split() if len(w) >= 2)
@@ -65,6 +67,10 @@ class BlockingEngine:
             if len(compact) >= 3:
                 for i in range(len(compact) - 2):
                     self.char3_freq[compact[i:i+3]] += 1
+            skel = r.get("consonant_skel", "")
+            if len(skel) >= 3:
+                for i in range(len(skel) - 2):
+                    self.skel3_freq[skel[i:i+3]] += 1
 
         n_records = len(pool_records)
         self.rare_thresh = 15000
@@ -144,6 +150,14 @@ class BlockingEngine:
                     tri = compact[i:i+3]
                     if self.char3_freq[tri] <= self.char3_thresh:
                         self.idx_char3[tri].append(e_id)
+
+            # Pass SK: Consonant Skeleton 3-grams (cross-lingual transliteration bridge)
+            skel = r.get("consonant_skel", "")
+            if len(skel) >= 3:
+                for i in range(len(skel) - 2):
+                    tri = skel[i:i+3]
+                    if self.skel3_freq[tri] <= 8000:
+                        self.idx_skel3[tri].append(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
@@ -252,8 +266,18 @@ class BlockingEngine:
             for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
 
+        # Pass SK: Consonant Skeleton 3-grams (cross-lingual transliteration bridge)
+        cands_sk = set()
+        s1_skel = s1_record.get("consonant_skel", "")
+        if len(s1_skel) >= 3:
+            s1_tris = list(set(s1_skel[i:i+3] for i in range(len(s1_skel) - 2)))
+            s1_tris.sort(key=lambda t: self.skel3_freq.get(t, 0))
+            for tri in s1_tris[:3]:
+                if self.skel3_freq.get(tri, 0) <= 8000 and tri in self.idx_skel3:
+                    cands_sk.update(self.idx_skel3[tri][:20])
+
         # Union
-        union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p
+        union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
 
         # Intelligent Similarity-Based Capping (preserves true matches with high similarity)
         if len(union_set) > self.adaptive_cap:
@@ -279,6 +303,7 @@ class BlockingEngine:
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
                 exact_bonus = 0.50 if cand in cands_exact else 0.0
                 pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
+                skel_bonus = 0.40 if cand in cands_sk else 0.0
                 multi_word_bonus = 0.35 if inter >= 2 else 0.0
                 multi_addr_bonus = 0.45 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
 
@@ -291,6 +316,7 @@ class BlockingEngine:
                     + pass_bonus
                     + multi_word_bonus
                     + multi_addr_bonus
+                    + skel_bonus
                 )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
@@ -301,13 +327,14 @@ class BlockingEngine:
             exact_candidates = [c for c, _ in scored if c in cands_exact][:max_exact_slots]
             protected_set = set(exact_candidates)
 
-            # 2. Protect top address / spatial matches (candidates with shared street number or multi-addr match)
+            # 2. Protect top address / spatial / skeleton matches
             max_spatial_slots = min(15, max(5, self.adaptive_cap // 3))
             spatial_candidates = [
                 c for c, _ in scored 
                 if c not in protected_set and (
                     (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums)
                     or len(self.pool_lookup.get(c, {}).get("addr_tokens", set()) & s1_addr_toks) >= 2
+                    or c in cands_sk
                 )
             ][:max_spatial_slots]
             protected_set.update(spatial_candidates)
@@ -325,6 +352,7 @@ class BlockingEngine:
             "Pass_D": cands_d,
             "Pass_E": cands_e,
             "Pass_P": cands_p,
+            "Pass_SK": cands_sk,
         }
         return union_set, per_pass
 

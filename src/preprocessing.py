@@ -27,6 +27,7 @@ from tqdm import tqdm
 # Add repository root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils import Timer, logger
+from src.transliteration import transliterate_indic_universal, consonant_skeleton
 
 
 # 1. Universal Legal Suffixes (US, India, and France)
@@ -42,7 +43,11 @@ LEGAL_SUFFIXES = [
     # France (Zero-shot in test)
     "societe a responsabilite limitee", "societe par actions simplifiee",
     "societe civile immobiliere", "entreprise unipersonnelle a responsabilite limitee",
-    "sarl", "sasu", "sas", "sci", "eurl", "snc", "gie", "sa"
+    "societe par actions simplifiee unipersonnelle", "societe en nom collectif",
+    "societe en commandite simple", "societe cooperative",
+    "sarl", "sasu", "sas", "sci", "eurl", "snc", "gie", "sa",
+    "s a r l", "s a s", "s c i", "s a", "s a s u", "e u r l",
+    "sca", "scop", "sem", "spl", "earl", "gaec", "ei", "eirl"
 ]
 
 # Match legal suffixes at the END of a string, or standalone
@@ -76,6 +81,10 @@ ROAD_ABBREVIATIONS = {
     r"\ballée\b": "all",
     r"\bchemin\b": "ch",
     r"\broute\b": "rte",
+    r"\bcours\b": "crs",
+    r"\bquai\b": "q",
+    r"\bplace\b": "pl",
+    r"\bfaubourg\b": "fbg",
 }
 
 # 3. Known US State Code Mappings (Bidirectional)
@@ -215,11 +224,19 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     if len(clean_prefix) >= 2:
         core_str = clean_prefix
 
+    # Universal Brahmic / Indic Transliteration & Consonant Skeleton
+    translit_str = transliterate_indic_universal(core_str)
+    consonant_skel_str = consonant_skeleton(core_str)
+
     # Augment with mined token translations (e.g. Indic script -> English)
     if MINED_TOKEN_MAP:
         extra_tokens = [MINED_TOKEN_MAP[t] for t in core_str.split() if t in MINED_TOKEN_MAP]
         if extra_tokens:
             core_str = core_str + " " + " ".join(extra_tokens)
+
+    # If text contained Indic script, augment core_str with transliterated tokens
+    if translit_str and translit_str != core_str:
+        core_str = core_str + " " + translit_str
 
     # Extract first non-trivial token (prioritize latin token if available for cross-script alignment)
     core_tokens = [t for t in core_str.split() if len(t) >= 2]
@@ -231,6 +248,8 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
         "norm_name": norm_str,
         "core_name": core_str,
         "guarded_leet_name": guarded_leet_str,
+        "translit_name": translit_str,
+        "consonant_skel": consonant_skel_str,
         "first_token": first_token
     }
 

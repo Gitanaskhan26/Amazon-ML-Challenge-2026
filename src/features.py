@@ -234,6 +234,19 @@ def extract_pair_features(
     feats["cross_name_addr_sim"] = feats["jw_core_name"] * feats["jw_clean_addr"]
     feats["cross_containment"] = feats["token_containment_name"] * feats["token_containment_addr"]
 
+    # 5. Consonant Skeleton Transliteration Features (Cross-script matching)
+    sk1 = s1_rec.get("consonant_skel", "")
+    sk2 = s23_rec.get("consonant_skel", "")
+    if sk1 and sk2:
+        feats["skel_similarity"] = jaro_winkler_sim(sk1, sk2)
+        sk1_3g = set(sk1[i:i+3] for i in range(len(sk1) - 2)) if len(sk1) >= 3 else set([sk1])
+        sk2_3g = set(sk2[i:i+3] for i in range(len(sk2) - 2)) if len(sk2) >= 3 else set([sk2])
+        union_3g = sk1_3g | sk2_3g
+        feats["skel_char3_jaccard"] = len(sk1_3g & sk2_3g) / len(union_3g) if union_3g else 0.0
+    else:
+        feats["skel_similarity"] = 0.0
+        feats["skel_char3_jaccard"] = 0.0
+
     return feats
 
 
