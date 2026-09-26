@@ -18,7 +18,6 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 from collections import defaultdict, Counter
-import pandas as pd
 from tqdm import tqdm
 
 # Add repository root to path
@@ -347,6 +346,7 @@ def run_blocking_validation(
     s2_path = val_dir / "val_source2.tsv"
     s3_path = val_dir / "val_source3.tsv"
 
+    import pandas as pd
     df_s1 = pd.read_csv(s1_path, sep="\t", dtype=str)
     df_s2 = pd.read_csv(s2_path, sep="\t", dtype=str)
     df_s3 = pd.read_csv(s3_path, sep="\t", dtype=str)
