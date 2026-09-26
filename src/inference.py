@@ -126,7 +126,12 @@ def run_pipeline():
             from catboost import CatBoostClassifier
             cb_booster = CatBoostClassifier()
             cb_booster.load_model(str(cb_path))
-            logger.info(f"Loaded trained CatBoost model from: {cb_path} (50/50 Ensemble Enabled!)")
+            # Safety: ensure CatBoost feature count matches LightGBM
+            if feature_names and cb_booster.feature_count_ != len(feature_names):
+                logger.warning(f"CatBoost model has {cb_booster.feature_count_} features but LightGBM has {len(feature_names)}. Disabling CatBoost ensemble.")
+                cb_booster = None
+            else:
+                logger.info(f"Loaded trained CatBoost model from: {cb_path} (50/50 Ensemble Enabled!)")
         except Exception as e:
             logger.warning(f"Could not load CatBoost model: {e}")
 
