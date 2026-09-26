@@ -51,6 +51,8 @@ class BlockingEngine:
         self.idx_char3 = defaultdict(list)
         self.idx_skel_exact = defaultdict(list)
         self.idx_skel3 = defaultdict(list)
+        self.idx_skel_post = defaultdict(list)
+        self.idx_skel_postpfx = defaultdict(list)
 
         # Token and 3-gram frequencies
         self.token_freq = Counter()
@@ -76,7 +78,7 @@ class BlockingEngine:
 
         n_records = len(pool_records)
         self.rare_thresh = 15000
-        self.char3_thresh = min(1200, max(50, int(n_records * 0.001)))
+        self.char3_thresh = min(3000, max(100, int(n_records * 0.002)))
 
         for r in pool_records:
             e_id = r["entity_id"]
@@ -160,8 +162,18 @@ class BlockingEngine:
                 self.idx_skel_exact[skel].append(e_id)
                 for i in range(len(skel) - 2):
                     tri = skel[i:i+3]
-                    if self.skel3_freq[tri] <= 8000:
+                    if self.skel3_freq[tri] <= 15000:
                         self.idx_skel3[tri].append(e_id)
+
+            # Pass SK2: Skeleton prefix + postal (transliterated names at same location)
+            if postal and len(skel) >= 3:
+                skel_prefix = skel[:min(4, len(skel))]
+                self.idx_skel_post[(skel_prefix, postal)].append(e_id)
+
+            # Pass SK3: Skeleton prefix + postal prefix (broader geo match)
+            if postal and len(postal) >= 3 and len(skel) >= 3:
+                skel_prefix = skel[:min(4, len(skel))]
+                self.idx_skel_postpfx[(skel_prefix, postal[:3])].append(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
@@ -259,30 +271,49 @@ class BlockingEngine:
                 if pair in self.idx_addr_rare:
                     cands_e.update(self.idx_addr_rare[pair][:35])
 
-        # Pass C: Character 3-grams (fallback if total candidates < 15)
-        if len(cands_exact | cands_a | cands_b | cands_d | cands_e | cands_p) < 15 and len(compact) >= 3:
+        # Pass C: Character 3-grams (ALWAYS fires — critical for transliteration/typo robustness)
+        if len(compact) >= 3:
             char_counts = Counter()
             tris = [compact[i:i+3] for i in range(len(compact)-2)]
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
-            for tri in tris[:3]:
+            # Use up to 5 rarest trigrams for better coverage
+            for tri in tris[:5]:
                 if self.char3_freq.get(tri, 0) <= self.char3_thresh and tri in self.idx_char3:
-                    for cid in self.idx_char3[tri][:30]:
+                    for cid in self.idx_char3[tri][:40]:
                         char_counts[cid] += 1
-            for cid, _ in char_counts.most_common(15):
-                cands_c.add(cid)
+            # Budget scales with how many candidates we already have
+            existing = len(cands_exact | cands_a | cands_b | cands_d | cands_e | cands_p)
+            budget = 20 if existing < 15 else (12 if existing < 40 else 6)
+            for cid, cnt in char_counts.most_common(budget):
+                if cnt >= 2 or existing < 15:
+                    cands_c.add(cid)
 
         # Pass SK: Consonant Skeleton Exact & 3-grams (cross-lingual transliteration bridge)
         cands_sk = set()
         s1_skel = s1_record.get("consonant_skel", "")
         if len(s1_skel) >= 3:
             if s1_skel in self.idx_skel_exact:
-                cands_sk.update(self.idx_skel_exact[s1_skel][:40])
+                cands_sk.update(self.idx_skel_exact[s1_skel][:80])
             s1_tris = list(set(s1_skel[i:i+3] for i in range(len(s1_skel) - 2)))
-            valid_tris = [t for t in s1_tris if 0 < self.skel3_freq.get(t, 0) <= 8000]
+            valid_tris = [t for t in s1_tris if 0 < self.skel3_freq.get(t, 0) <= 15000]
             valid_tris.sort(key=lambda t: self.skel3_freq[t])
-            for tri in valid_tris[:5]:
+            for tri in valid_tris[:7]:
                 if tri in self.idx_skel3:
-                    cands_sk.update(self.idx_skel3[tri][:35])
+                    cands_sk.update(self.idx_skel3[tri][:50])
+
+            # Pass SK2: Skeleton prefix + postal (transliterated names at same location)
+            if postal:
+                skel_prefix = s1_skel[:min(4, len(s1_skel))]
+                key = (skel_prefix, postal)
+                if key in self.idx_skel_post:
+                    cands_sk.update(self.idx_skel_post[key][:40])
+
+            # Pass SK3: Skeleton prefix + postal prefix (broader geo match)
+            if postal and len(postal) >= 3:
+                skel_prefix = s1_skel[:min(4, len(s1_skel))]
+                key = (skel_prefix, postal[:3])
+                if key in self.idx_skel_postpfx:
+                    cands_sk.update(self.idx_skel_postpfx[key][:25])
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
@@ -407,7 +438,7 @@ class BlockingEngine:
             protected_set.update(t_conf)
 
             # 4. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
-            t_skel_cap = max(12, int(self.adaptive_cap * 0.15))
+            t_skel_cap = max(20, int(self.adaptive_cap * 0.25))
             t_skel = [x[0] for x in scored if x[0] not in protected_set and x[5]][:t_skel_cap]
             protected_set.update(t_skel)
 

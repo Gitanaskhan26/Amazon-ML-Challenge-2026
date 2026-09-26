@@ -378,7 +378,7 @@ def train_full_pool():
         params = {
             "objective": "binary",
             "metric": ["binary_logloss", "auc"],
-            "learning_rate": 0.06,
+            "learning_rate": 0.03,
             "num_leaves": 63,
             "max_depth": 8,
             "min_data_in_leaf": 80,
@@ -395,9 +395,9 @@ def train_full_pool():
         booster = lgb.train(
             params,
             dtrain,
-            num_boost_round=600,
+            num_boost_round=2000,
             valid_sets=[dtrain, dval],
-            callbacks=[lgb.early_stopping(stopping_rounds=40, verbose=True), lgb.log_evaluation(period=50)]
+            callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=True), lgb.log_evaluation(period=100)]
         )
 
         booster.save_model(str(model_out))
@@ -415,15 +415,15 @@ def train_full_pool():
     if HAS_CATBOOST:
         with Timer("Training CatBoost Classifier with Symmetric Trees"):
             cb_model = CatBoostClassifier(
-                iterations=500,
-                learning_rate=0.06,
+                iterations=1500,
+                learning_rate=0.03,
                 depth=7,
                 thread_count=args.n_jobs,
-                verbose=50,
+                verbose=100,
                 eval_metric="Logloss",
                 random_seed=args.seed
             )
-            cb_model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=30, verbose=50)
+            cb_model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=100, verbose=100)
             cb_path = model_out.parent / "cb_model.cbm"
             cb_model.save_model(str(cb_path))
             logger.info(f"Trained CatBoost model saved to: {cb_path}")
