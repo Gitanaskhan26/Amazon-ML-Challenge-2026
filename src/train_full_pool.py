@@ -80,8 +80,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=50,
-        help="Maximum candidates per Source 1 entity in blocking stage (default: 50)"
+        default=80,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 80)"
     )
     parser.add_argument(
         "--n-jobs",
@@ -557,11 +557,14 @@ def train_full_pool():
                 continue
             if cand_id not in assigned_s23:
                 is_s2 = cand_id.startswith("S2")
-                if is_s2 and s1_s2_count[s1_id] >= 5:
-                    continue
-                if not is_s2 and s1_s3_count[s1_id] >= 5:
-                    continue
-                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
+                # Tighten cluster bounds to eliminate spurious False Positives:
+                if is_s2 and s1_s2_count[s1_id] >= 1:
+                    if s1_s2_count[s1_id] >= 2 or score < (c_tau + 0.12):
+                        continue
+                if not is_s2 and s1_s3_count[s1_id] >= 1:
+                    if s1_s3_count[s1_id] >= 2 or score < (c_tau + 0.12):
+                        continue
+                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 3:
                     continue
                 assigned_s23.add(cand_id)
                 if is_s2:

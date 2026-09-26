@@ -54,8 +54,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=50,
-        help="Maximum candidates per Source 1 entity in blocking stage (default: 50)"
+        default=80,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 80)"
     )
     parser.add_argument(
         "--model-path",

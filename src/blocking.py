@@ -28,7 +28,7 @@ from src.transliteration import consonant_skeleton
 
 
 class BlockingEngine:
-    def __init__(self, adaptive_cap: int = 50):
+    def __init__(self, adaptive_cap: int = 80):
         self.adaptive_cap = adaptive_cap
 
     def build_indexes(self, pool_records: List[Dict]):
@@ -195,17 +195,17 @@ class BlockingEngine:
 
         words = sorted(list(s1_words), key=lambda w: self.token_freq.get(w, 0))
 
-        # Pass A: Rare tokens (rarest first, check up to 4 words, up to 30 per word)
+        # Pass A: Rare tokens (rarest first, check up to 4 words, up to 40 per word)
         for w in words[:4]:
             if self.token_freq.get(w, 0) <= self.rare_thresh and w in self.idx_rare_token:
-                cands_a.update(self.idx_rare_token[w][:30])
+                cands_a.update(self.idx_rare_token[w][:40])
 
         # Pass A2: Core name natural bigrams (preserves natural word adjacency)
         core_toks = [w for w in core_name.split() if len(w) >= 2]
         for i in range(len(core_toks) - 1):
             pair = (core_toks[i], core_toks[i+1])
             if pair in self.idx_bigram:
-                cands_a.update(self.idx_bigram[pair][:25])
+                cands_a.update(self.idx_bigram[pair][:40])
 
         # Pass A3: Unordered Rare Name Pairs (vital for word reordering / extra words)
         clean_words = sorted([w for w in words if len(w) >= 2], key=lambda w: self.token_freq.get(w, 0))
@@ -215,7 +215,7 @@ class BlockingEngine:
                 if min(self.token_freq.get(w1, 0), self.token_freq.get(w2, 0)) <= 35000:
                     pair = (w1, w2) if w1 < w2 else (w2, w1)
                     if pair in self.idx_name_pair:
-                        cands_a.update(self.idx_name_pair[pair][:20])
+                        cands_a.update(self.idx_name_pair[pair][:40])
 
         # Pass B, B2, B3: Street Number + Word / Street / Rare Addr Token
         addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 100000], key=lambda x: self.addr_token_freq.get(x, 0))
@@ -223,33 +223,33 @@ class BlockingEngine:
             for w in words[:3]:
                 key = (num, w)
                 if key in self.idx_num_first:
-                    cands_b.update(self.idx_num_first[key][:20])
+                    cands_b.update(self.idx_num_first[key][:45])
             if street_tok:
                 key = (num, street_tok)
                 if key in self.idx_num_street:
-                    cands_b.update(self.idx_num_street[key][:20])
+                    cands_b.update(self.idx_num_street[key][:45])
             for a in addr_words[:25]:
                 key = (num, a)
                 if key in self.idx_num_addr:
-                    cands_b.update(self.idx_num_addr[key][:20])
+                    cands_b.update(self.idx_num_addr[key][:45])
 
         # Pass D: Street Number + Postal (ALWAYS queried)
         if postal:
             for num in numbers:
                 key = (num, postal)
                 if key in self.idx_num_post:
-                    cands_d.update(self.idx_num_post[key][:20])
+                    cands_d.update(self.idx_num_post[key][:40])
 
         # Pass P1 & P2: Postal Code + Name Word / Street Token (ALWAYS queried when postal present)
         if postal:
             for w in words[:4]:
                 key = (postal, w)
                 if key in self.idx_post_name:
-                    cands_p.update(self.idx_post_name[key][:20])
+                    cands_p.update(self.idx_post_name[key][:45])
             if street_tok:
                 key = (postal, street_tok)
                 if key in self.idx_post_street:
-                    cands_p.update(self.idx_post_street[key][:20])
+                    cands_p.update(self.idx_post_street[key][:45])
 
         # Pass E: Combinatorial Address Token Pairs
         addr_words_e = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 35000], key=lambda x: self.addr_token_freq.get(x, 0))
@@ -257,7 +257,7 @@ class BlockingEngine:
             for j in range(i + 1, min(10, len(addr_words_e))):
                 pair = (addr_words_e[i], addr_words_e[j]) if addr_words_e[i] < addr_words_e[j] else (addr_words_e[j], addr_words_e[i])
                 if pair in self.idx_addr_rare:
-                    cands_e.update(self.idx_addr_rare[pair][:20])
+                    cands_e.update(self.idx_addr_rare[pair][:35])
 
         # Pass C: Character 3-grams (fallback if total candidates < 15)
         if len(cands_exact | cands_a | cands_b | cands_d | cands_e | cands_p) < 15 and len(compact) >= 3:
@@ -266,9 +266,9 @@ class BlockingEngine:
             tris.sort(key=lambda t: self.char3_freq.get(t, 0))
             for tri in tris[:3]:
                 if self.char3_freq.get(tri, 0) <= self.char3_thresh and tri in self.idx_char3:
-                    for cid in self.idx_char3[tri][:20]:
+                    for cid in self.idx_char3[tri][:30]:
                         char_counts[cid] += 1
-            for cid, _ in char_counts.most_common(10):
+            for cid, _ in char_counts.most_common(15):
                 cands_c.add(cid)
 
         # Pass SK: Consonant Skeleton Exact & 3-grams (cross-lingual transliteration bridge)
@@ -276,13 +276,13 @@ class BlockingEngine:
         s1_skel = s1_record.get("consonant_skel", "")
         if len(s1_skel) >= 3:
             if s1_skel in self.idx_skel_exact:
-                cands_sk.update(self.idx_skel_exact[s1_skel][:25])
+                cands_sk.update(self.idx_skel_exact[s1_skel][:40])
             s1_tris = list(set(s1_skel[i:i+3] for i in range(len(s1_skel) - 2)))
             valid_tris = [t for t in s1_tris if 0 < self.skel3_freq.get(t, 0) <= 8000]
             valid_tris.sort(key=lambda t: self.skel3_freq[t])
             for tri in valid_tris[:5]:
                 if tri in self.idx_skel3:
-                    cands_sk.update(self.idx_skel3[tri][:25])
+                    cands_sk.update(self.idx_skel3[tri][:35])
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
@@ -292,6 +292,7 @@ class BlockingEngine:
             s1_nums = numbers
             s1_addr_toks = s1_record.get("addr_tokens", set())
             len_s1 = len(s1_words)
+            s1_skel = s1_record.get("consonant_skel", "")
             scored = []
             for cand in union_set:
                 r = self.pool_lookup.get(cand)
@@ -309,29 +310,37 @@ class BlockingEngine:
 
                 num_sim = 1.0 if (s1_nums and r["street_numbers"] & s1_nums) else 0.0
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
-                exact_bonus = 0.50 if cand in cands_exact else 0.0
-                pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
-                skel_bonus = 0.40 if cand in cands_sk else 0.0
-                multi_word_bonus = 0.35 if inter >= 2 else 0.0
-                multi_addr_bonus = 0.45 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
 
-                # Doorstep Physical Address Match: Direct physical co-location
-                # Shared street number + >= 2 addr tokens, OR >= 4 addr tokens, OR same street num + same postal
-                # 1. Doorstep Physical Address Match: Direct physical co-location
+                # 1. Exact Name Match (Guaranteed top tier)
+                exact_bonus = 3.0 if cand in cands_exact else 0.0
+
+                # 2. Skeleton Transliteration Match (cross-lingual phonetic bridge)
+                c_skel = r.get("consonant_skel", "")
+                exact_skel = bool(len(s1_skel) >= 3 and s1_skel == c_skel)
+                skel_bonus = 2.0 if exact_skel else (1.2 if cand in cands_sk else 0.0)
+
+                # 3. Word Overlap Bonuses
+                multi_word_bonus = 1.5 if inter >= 2 else (0.5 if inter == 1 else 0.0)
+
+                # 4. Multi Address Overlap
+                multi_addr_bonus = 0.50 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
+                pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
+
+                # 5. Doorstep Physical Address Match: Direct physical co-location
                 doorstep_match = (
                     (num_sim == 1.0 and addr_inter >= 1)
                     or (addr_inter >= 3)
                     or (num_sim == 1.0 and post_sim == 1.0)
                     or (post_sim == 1.0 and addr_inter >= 1)
                 )
-                doorstep_bonus = 0.85 if doorstep_match else 0.0
 
-                # 2. Confirmed Business Match: Doorstep Address + (Name Word OR Skeleton Match)
-                # Separates the actual business from random neighbor shops in the same building
-                confirmed_bonus = 1.00 if (doorstep_match and (inter >= 1 or cand in cands_sk)) else 0.0
+                has_name_affinity = bool(inter >= 1 or cand in cands_sk or exact_skel or cand in cands_exact)
 
-                # 3. High Name Similarity (protects name matches where address is missing/nan)
-                name_bonus = 0.50 if (inter >= 2 or cand in cands_exact) else (0.25 if inter >= 1 else 0.0)
+                # Confirmed Business Match: Doorstep Address + Name/Skeleton Affinity
+                confirmed_bonus = 2.0 if (doorstep_match and has_name_affinity) else 0.0
+
+                # Co-located neighbor with 0 name affinity gets a modest bonus, NOT outranking real name matches
+                neighbor_bonus = 0.25 if (doorstep_match and not has_name_affinity) else 0.0
 
                 score = (
                     0.25 * word_sim
@@ -339,53 +348,44 @@ class BlockingEngine:
                     + 0.15 * num_sim
                     + 0.10 * post_sim
                     + exact_bonus
-                    + pass_bonus
-                    + multi_word_bonus
-                    + multi_addr_bonus
                     + skel_bonus
-                    + doorstep_bonus
+                    + multi_word_bonus
                     + confirmed_bonus
-                    + name_bonus
+                    + neighbor_bonus
+                    + multi_addr_bonus
+                    + pass_bonus
                 )
-                scored.append((cand, score))
+                scored.append((cand, score, cand in cands_exact, doorstep_match and has_name_affinity, cand in cands_sk or exact_skel, inter >= 2, doorstep_match))
+
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Balanced 4-Tier Allocation:
-            # Tier 1: Confirmed Business Matches (Doorstep Address + Name/Skeleton Match)
-            confirmed_candidates = [
-                c for c, _ in scored
-                if (
-                    ((s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
-                     or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 3)
-                    and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk)
-                )
-            ][:15]
-            protected_set = set(confirmed_candidates)
+            # Balanced Multi-Tier Protection (dynamically scaled by adaptive_cap):
+            # 1. Exact Name Matches (MUST never be dropped)
+            t_exact = [x[0] for x in scored if x[2]][:20]
+            protected_set = set(t_exact)
 
-            # Tier 2: Doorstep Address Matches (covers cross-script entities with 0 Latin name overlap)
-            doorstep_candidates = [
-                c for c, _ in scored
-                if c not in protected_set and (
-                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
-                    or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 3
-                )
-            ][:10]
-            protected_set.update(doorstep_candidates)
+            # 2. Confirmed Business Matches (Doorstep Address + Name/Skeleton Affinity)
+            t_conf_cap = max(15, int(self.adaptive_cap * 0.25))
+            t_conf = [x[0] for x in scored if x[0] not in protected_set and x[3]][:t_conf_cap]
+            protected_set.update(t_conf)
 
-            # Tier 3: High-Confidence Name Matches (protects candidates where target has nan/missing address)
-            name_candidates = [
-                c for c, _ in scored
-                if c not in protected_set and (
-                    c in cands_exact
-                    or len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 2
-                    or (c in cands_a and len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1)
-                    or c in cands_sk
-                )
-            ][:15]
-            protected_set.update(name_candidates)
+            # 3. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
+            t_skel_cap = max(10, int(self.adaptive_cap * 0.15))
+            t_skel = [x[0] for x in scored if x[0] not in protected_set and x[4]][:t_skel_cap]
+            protected_set.update(t_skel)
 
-            # Tier 4: Fill remaining slots with the highest scoring candidates overall
-            remaining = [c for c, _ in scored if c not in protected_set]
+            # 4. Multi-word Name Matches (>= 2 shared words)
+            t_name_cap = max(15, int(self.adaptive_cap * 0.25))
+            t_name = [x[0] for x in scored if x[0] not in protected_set and x[5]][:t_name_cap]
+            protected_set.update(t_name)
+
+            # 5. Pure Doorstep Matches (for co-located candidates where name was missing or unparsed)
+            t_door_cap = max(10, int(self.adaptive_cap * 0.15))
+            t_door = [x[0] for x in scored if x[0] not in protected_set and x[6]][:t_door_cap]
+            protected_set.update(t_door)
+
+            # 6. Fill remaining slots with the highest scoring candidates overall
+            remaining = [x[0] for x in scored if x[0] not in protected_set]
             slots_left = max(0, self.adaptive_cap - len(protected_set))
             union_set = protected_set | set(remaining[:slots_left])
 
