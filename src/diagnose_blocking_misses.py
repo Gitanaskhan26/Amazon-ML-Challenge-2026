@@ -19,7 +19,7 @@ from src.blocking import BlockingEngine
 from src.utils import Timer, logger, find_file
 
 
-def diagnose(train_dir_path: str, sample_s1: int = 2000, adaptive_cap: int = 90):
+def diagnose(train_dir_path: str, sample_s1: int = 2000, adaptive_cap: int = 80):
     train_dir = Path(train_dir_path).resolve()
     logger.info(f"=== Diagnosing Blocking False Negatives on {train_dir} (Adaptive Cap = {adaptive_cap}) ===")
 
@@ -182,6 +182,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-dir", type=str, default="./dataset/train")
     parser.add_argument("--sample-s1", type=int, default=2000)
-    parser.add_argument("--adaptive-cap", type=int, default=90)
+    parser.add_argument("--adaptive-cap", type=int, default=80)
     args = parser.parse_args()
     diagnose(args.train_dir, args.sample_s1, args.adaptive_cap)

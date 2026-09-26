@@ -28,7 +28,7 @@ from src.transliteration import consonant_skeleton
 
 
 class BlockingEngine:
-    def __init__(self, adaptive_cap: int = 90):
+    def __init__(self, adaptive_cap: int = 80):
         self.adaptive_cap = adaptive_cap
 
     def build_indexes(self, pool_records: List[Dict]):
@@ -329,17 +329,17 @@ class BlockingEngine:
                 # 5. Strong Doorstep Physical Address Match:
                 # Direct physical co-location at same door/house/plot/building
                 strong_doorstep = bool(
-                    (num_sim == 1.0 and addr_inter >= 1)
-                    or (addr_inter >= 3)
-                    or (num_sim == 1.0 and post_sim == 1.0)
-                    or (post_sim == 1.0 and addr_inter >= 2)
+                    (num_sim == 1.0 and addr_inter >= 2)
+                    or (addr_inter >= 4)
+                    or (num_sim == 1.0 and post_sim == 1.0 and addr_inter >= 1)
                 )
 
                 # Moderate Doorstep (Street number or 2 address words)
                 moderate_doorstep = bool(
                     not strong_doorstep and (
-                        num_sim == 1.0
-                        or addr_inter >= 2
+                        (num_sim == 1.0 and addr_inter >= 1)
+                        or (addr_inter >= 2)
+                        or (num_sim == 1.0 and post_sim == 1.0)
                     )
                 )
 
@@ -356,14 +356,14 @@ class BlockingEngine:
                 # Confirmed Business Match: Strong Doorstep Address + Name/Skeleton Affinity
                 confirmed_bonus = 2.0 if (strong_doorstep and has_name_affinity) else 0.0
 
-                # 6. Missing Address Name Rescue Bonus:
-                # When target address is missing (nan/empty) in ground truth, match is 100% name-driven!
-                # Protect strong name matches so address-bearing distractors do not drown them out:
-                is_missing_addr = bool(len(c_addr_toks) == 0 or not r.get("clean_addr") or r.get("clean_addr") == "nan")
+                # 6. Brand Name & Missing Address Protection:
                 s1_first = s1_record.get("first_token", "")
                 c_first = r.get("first_token", "")
-                has_first_token_match = bool(s1_first and c_first and s1_first == c_first)
+                has_first_token_match = bool(s1_first and c_first and s1_first == c_first and self.token_freq.get(s1_first, 0) <= 25000)
+                is_missing_addr = bool(len(c_addr_toks) == 0 or not r.get("clean_addr") or r.get("clean_addr") == "nan")
                 name_rescue_bonus = 2.2 if (is_missing_addr and (inter >= 2 or has_first_token_match or exact_skel or cand in cands_exact)) else 0.0
+
+                is_high_name = bool(inter >= 2 or has_first_token_match)
 
                 score = (
                     0.25 * word_sim
@@ -386,35 +386,35 @@ class BlockingEngine:
                     strong_doorstep,
                     confirmed_bonus > 0,
                     cand in cands_sk or exact_skel,
-                    inter >= 2 or (is_missing_addr and has_first_token_match)
+                    is_high_name
                 ))
 
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Balanced Multi-Tier Protection (dynamically scaled by adaptive_cap):
+            # Balanced Multi-Tier Protection (tightly budgeted so total < adaptive_cap):
             # 1. Exact Name Matches (MUST never be dropped)
-            t_exact = [x[0] for x in scored if x[2]][:20]
+            t_exact = [x[0] for x in scored if x[2]][:15]
             protected_set = set(t_exact)
 
             # 2. Strong Doorstep Physical Address Matches (MUST never be dropped - covers DBA/trade names & cross-script entities)
-            t_door_cap = max(30, int(self.adaptive_cap * 0.35))
+            t_door_cap = max(20, int(self.adaptive_cap * 0.25))
             t_door = [x[0] for x in scored if x[0] not in protected_set and x[3]][:t_door_cap]
             protected_set.update(t_door)
 
-            # 3. High-Confidence Name Matches (>= 2 shared words, or first token match with missing address)
-            t_name_cap = max(25, int(self.adaptive_cap * 0.30))
-            t_name = [x[0] for x in scored if x[0] not in protected_set and x[6]][:t_name_cap]
-            protected_set.update(t_name)
-
-            # 4. Confirmed Business Matches (Doorstep + Name/Skeleton Affinity)
-            t_conf_cap = max(20, int(self.adaptive_cap * 0.25))
+            # 3. Confirmed Business Matches (Doorstep + Name/Skeleton Affinity)
+            t_conf_cap = max(15, int(self.adaptive_cap * 0.20))
             t_conf = [x[0] for x in scored if x[0] not in protected_set and x[4]][:t_conf_cap]
             protected_set.update(t_conf)
 
-            # 5. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
-            t_skel_cap = max(15, int(self.adaptive_cap * 0.20))
+            # 4. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
+            t_skel_cap = max(12, int(self.adaptive_cap * 0.15))
             t_skel = [x[0] for x in scored if x[0] not in protected_set and x[5]][:t_skel_cap]
             protected_set.update(t_skel)
+
+            # 5. High-Confidence Name Matches (>= 2 shared words or rare brand first token match)
+            t_name_cap = max(15, int(self.adaptive_cap * 0.20))
+            t_name = [x[0] for x in scored if x[0] not in protected_set and x[6]][:t_name_cap]
+            protected_set.update(t_name)
 
             # 6. Fill remaining slots with the highest scoring candidates overall
             remaining = [x[0] for x in scored if x[0] not in protected_set]
