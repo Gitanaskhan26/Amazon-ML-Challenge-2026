@@ -317,13 +317,21 @@ class BlockingEngine:
 
                 # Doorstep Physical Address Match: Direct physical co-location
                 # Shared street number + >= 2 addr tokens, OR >= 4 addr tokens, OR same street num + same postal
+                # 1. Doorstep Physical Address Match: Direct physical co-location
                 doorstep_match = (
-                    (num_sim == 1.0 and addr_inter >= 2)
-                    or (addr_inter >= 4)
+                    (num_sim == 1.0 and addr_inter >= 1)
+                    or (addr_inter >= 3)
                     or (num_sim == 1.0 and post_sim == 1.0)
-                    or (post_sim == 1.0 and addr_inter >= 2)
+                    or (post_sim == 1.0 and addr_inter >= 1)
                 )
                 doorstep_bonus = 0.85 if doorstep_match else 0.0
+
+                # 2. Confirmed Business Match: Doorstep Address + (Name Word OR Skeleton Match)
+                # Separates the actual business from random neighbor shops in the same building
+                confirmed_bonus = 1.00 if (doorstep_match and (inter >= 1 or cand in cands_sk)) else 0.0
+
+                # 3. High Name Similarity (protects name matches where address is missing/nan)
+                name_bonus = 0.50 if (inter >= 2 or cand in cands_exact) else (0.25 if inter >= 1 else 0.0)
 
                 score = (
                     0.25 * word_sim
@@ -336,38 +344,45 @@ class BlockingEngine:
                     + multi_addr_bonus
                     + skel_bonus
                     + doorstep_bonus
+                    + confirmed_bonus
+                    + name_bonus
                 )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Balanced Allocation:
-            # Tier 1: Doorstep Physical Address Matches (Direct physical co-location)
-            doorstep_candidates = [
+            # Balanced 4-Tier Allocation:
+            # Tier 1: Confirmed Business Matches (Doorstep Address + Name/Skeleton Match)
+            confirmed_candidates = [
                 c for c, _ in scored
                 if (
-                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 2)
-                    or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 4
-                    or (postal and self.pool_lookup.get(c, {}).get("postal_code") == postal and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 2)
+                    ((s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
+                     or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 3)
+                    and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk)
                 )
             ][:15]
-            protected_set = set(doorstep_candidates)
+            protected_set = set(confirmed_candidates)
 
-            # Tier 2: Exact Name Matches
-            max_exact_slots = min(15, max(5, self.adaptive_cap // 3))
-            exact_candidates = [c for c, _ in scored if c in cands_exact and c not in protected_set][:max_exact_slots]
-            protected_set.update(exact_candidates)
-
-            # Tier 3: Spatial / Address / Skeleton Matches
-            max_spatial_slots = min(10, max(3, self.adaptive_cap // 5))
-            spatial_candidates = [
-                c for c, _ in scored 
+            # Tier 2: Doorstep Address Matches (covers cross-script entities with 0 Latin name overlap)
+            doorstep_candidates = [
+                c for c, _ in scored
                 if c not in protected_set and (
-                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums)
-                    or len(self.pool_lookup.get(c, {}).get("addr_tokens", set()) & s1_addr_toks) >= 2
+                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
+                    or len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 3
+                )
+            ][:10]
+            protected_set.update(doorstep_candidates)
+
+            # Tier 3: High-Confidence Name Matches (protects candidates where target has nan/missing address)
+            name_candidates = [
+                c for c, _ in scored
+                if c not in protected_set and (
+                    c in cands_exact
+                    or len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 2
+                    or (c in cands_a and len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1)
                     or c in cands_sk
                 )
-            ][:max_spatial_slots]
-            protected_set.update(spatial_candidates)
+            ][:15]
+            protected_set.update(name_candidates)
 
             # Tier 4: Fill remaining slots with the highest scoring candidates overall
             remaining = [c for c, _ in scored if c not in protected_set]
