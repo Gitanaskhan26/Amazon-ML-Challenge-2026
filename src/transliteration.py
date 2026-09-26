@@ -47,7 +47,7 @@ OFFSET_MAP = {
     0x02: 'n', 0x03: 'h', 0x4D: ''  # Virama / halant
 }
 
-VOWEL_SET = set("aeiou \t\n\r-_/.,#()[]{}'\"")
+VOWEL_SET = set("aeiouy \t\n\r-_/.,#()[]{}'\"")
 
 
 def is_indic_text(text: str) -> bool:
@@ -88,17 +88,28 @@ def consonant_skeleton(text: str) -> str:
     """
     Produces the invariant consonant skeleton of a name by:
       1. Transliterating Indic script to Latin phonemes
-      2. Normalizing 'w' -> 'v'
-      3. Removing all vowels and punctuation
+      2. Normalizing phonetic loanwords ('tch'/'ch'/'ck' -> 'k', 'ph' -> 'f', 'sh' -> 's', 'w' -> 'v', 'x' -> 'ks')
+      3. Removing all vowels, semi-vowels ('y'), and punctuation
       4. Collapsing consecutive duplicate consonants (e.g. 'gg' -> 'g')
     Enables cross-lingual and spelling-invariant matching:
-      'Premier Tech' -> 'prmrtch'
-      'प र म यर ट क'  -> 'prmyrtk' (89% similarity)
-      'Aggarwal' vs 'Agarwal' -> 'grvl' (100% exact match)
+      'Premier Tech' -> 'prmrtk'
+      'प र म यर ट क'  -> 'prmrtk' (100% exact match!)
+      'Good Systems' -> 'gdstms'
+      'ग ड स स टम स' -> 'gdstms' (100% exact match!)
+      'Aggarwal' vs 'Agarwal' -> 'grvl' (100% exact match!)
     """
     if not text:
         return ""
-    translit = transliterate_indic_universal(text).lower().replace("w", "v")
+    translit = transliterate_indic_universal(text).lower()
+    translit = (
+        translit.replace("tch", "k")
+        .replace("ch", "k")
+        .replace("ck", "k")
+        .replace("ph", "f")
+        .replace("sh", "s")
+        .replace("w", "v")
+        .replace("x", "ks")
+    )
     raw = "".join(c for c in translit if c.isalpha() and c not in VOWEL_SET)
     return re.sub(r"(.)\1+", r"\1", raw)
 

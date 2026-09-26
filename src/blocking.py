@@ -24,6 +24,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.utils import Timer, logger, write_submission_tsv
 from src.preprocessing import clean_name_multiview, clean_address_multiview
+from src.transliteration import consonant_skeleton
 
 
 class BlockingEngine:
@@ -95,9 +96,10 @@ class BlockingEngine:
                 if self.token_freq[w] <= self.rare_thresh:
                     self.idx_rare_token[w].append(e_id)
 
-            # Pass A2: Core name bigrams
-            for i in range(len(words) - 1):
-                self.idx_bigram[(words[i], words[i+1])].append(e_id)
+            # Pass A2: Core name natural bigrams (preserves natural word adjacency)
+            core_toks = [w for w in core_name.split() if len(w) >= 2]
+            for i in range(len(core_toks) - 1):
+                self.idx_bigram[(core_toks[i], core_toks[i+1])].append(e_id)
 
             # Pass A3: Unordered Rare Name Pairs (robust to reordering, typos in 3rd word, token insertions)
             clean_words = sorted([w for w in words if len(w) >= 2], key=lambda w: self.token_freq[w])
@@ -160,6 +162,11 @@ class BlockingEngine:
                     tri = skel[i:i+3]
                     if self.skel3_freq[tri] <= 8000:
                         self.idx_skel3[tri].append(e_id)
+            for w in core_toks:
+                if len(w) >= 3:
+                    w_skel = consonant_skeleton(w)
+                    if len(w_skel) >= 3 and w_skel != skel:
+                        self.idx_skel_exact[w_skel].append(e_id)
 
     def retrieve_candidates_for_s1(self, s1_record: Dict) -> Tuple[Set[str], Dict[str, Set[str]]]:
         """
@@ -198,11 +205,12 @@ class BlockingEngine:
             if self.token_freq.get(w, 0) <= self.rare_thresh and w in self.idx_rare_token:
                 cands_a.update(self.idx_rare_token[w][:30])
 
-        # Pass A2: Bigrams
-        for i in range(len(words) - 1):
-            pair = (words[i], words[i+1])
+        # Pass A2: Core name natural bigrams (preserves natural word adjacency)
+        core_toks = [w for w in core_name.split() if len(w) >= 2]
+        for i in range(len(core_toks) - 1):
+            pair = (core_toks[i], core_toks[i+1])
             if pair in self.idx_bigram:
-                cands_a.update(self.idx_bigram[pair][:20])
+                cands_a.update(self.idx_bigram[pair][:25])
 
         # Pass A3: Unordered Rare Name Pairs (vital for word reordering / extra words)
         clean_words = sorted([w for w in words if len(w) >= 2], key=lambda w: self.token_freq.get(w, 0))
@@ -277,9 +285,15 @@ class BlockingEngine:
             s1_tris = list(set(s1_skel[i:i+3] for i in range(len(s1_skel) - 2)))
             valid_tris = [t for t in s1_tris if 0 < self.skel3_freq.get(t, 0) <= 8000]
             valid_tris.sort(key=lambda t: self.skel3_freq[t])
-            for tri in valid_tris[:4]:
+            for tri in valid_tris[:5]:
                 if tri in self.idx_skel3:
                     cands_sk.update(self.idx_skel3[tri][:25])
+
+        for w in core_toks:
+            if len(w) >= 3:
+                w_skel = consonant_skeleton(w)
+                if len(w_skel) >= 3 and w_skel in self.idx_skel_exact:
+                    cands_sk.update(self.idx_skel_exact[w_skel][:20])
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
@@ -312,6 +326,13 @@ class BlockingEngine:
                 multi_word_bonus = 0.35 if inter >= 2 else 0.0
                 multi_addr_bonus = 0.45 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
 
+                # Compound Anchor: Physical doorstep (street num or postal) + Name/Skeleton + Locality/City
+                compound_anchor = (
+                    (num_sim == 1.0 and (inter >= 1 or cand in cands_sk) and addr_inter >= 1)
+                    or (post_sim == 1.0 and (inter >= 1 or cand in cands_sk) and addr_inter >= 1)
+                )
+                compound_bonus = 0.60 if compound_anchor else 0.0
+
                 score = (
                     0.25 * word_sim
                     + 0.25 * addr_sim
@@ -322,18 +343,30 @@ class BlockingEngine:
                     + multi_word_bonus
                     + multi_addr_bonus
                     + skel_bonus
+                    + compound_bonus
                 )
                 scored.append((cand, score))
             scored.sort(key=lambda x: x[1], reverse=True)
 
-            # Balanced allocation:
-            # 1. Protect top exact matches, but cap at min(15, adaptive_cap // 3) so common names don't starve address matches
-            max_exact_slots = min(15, max(5, self.adaptive_cap // 3))
-            exact_candidates = [c for c, _ in scored if c in cands_exact][:max_exact_slots]
-            protected_set = set(exact_candidates)
+            # Balanced 4-Tier Slot Allocation:
+            # Tier 1: Compound Anchor Matches (physical doorstep + name word/skeleton + locality)
+            max_compound_slots = min(15, max(5, self.adaptive_cap // 3))
+            compound_candidates = [
+                c for c, _ in scored
+                if (
+                    (s1_nums and self.pool_lookup.get(c, {}).get("street_numbers", set()) & s1_nums and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk) and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
+                    or (postal and self.pool_lookup.get(c, {}).get("postal_code") == postal and (len(s1_words & self.pool_lookup.get(c, {}).get("core_words", set())) >= 1 or c in cands_sk) and len(s1_addr_toks & self.pool_lookup.get(c, {}).get("addr_tokens", set())) >= 1)
+                )
+            ][:max_compound_slots]
+            protected_set = set(compound_candidates)
 
-            # 2. Protect top address / spatial / skeleton matches
-            max_spatial_slots = min(15, max(5, self.adaptive_cap // 3))
+            # Tier 2: Exact Name Matches
+            max_exact_slots = min(12, max(4, self.adaptive_cap // 4))
+            exact_candidates = [c for c, _ in scored if c in cands_exact and c not in protected_set][:max_exact_slots]
+            protected_set.update(exact_candidates)
+
+            # Tier 3: Spatial / Address / Skeleton Matches
+            max_spatial_slots = min(12, max(4, self.adaptive_cap // 4))
             spatial_candidates = [
                 c for c, _ in scored 
                 if c not in protected_set and (
@@ -344,7 +377,7 @@ class BlockingEngine:
             ][:max_spatial_slots]
             protected_set.update(spatial_candidates)
 
-            # 3. Fill remaining slots with the highest scoring candidates overall
+            # Tier 4: Fill remaining slots with the highest scoring candidates overall
             remaining = [c for c, _ in scored if c not in protected_set]
             slots_left = max(0, self.adaptive_cap - len(protected_set))
             union_set = protected_set | set(remaining[:slots_left])
