@@ -75,6 +75,18 @@ def parse_args():
         default=True,
         help="Run utils/validate_submission.py on generated outputs"
     )
+    parser.add_argument(
+        "--enable-veto",
+        action="store_true",
+        default=False,
+        help="Enable heuristic singleton veto (default: False, preserves calibrated matches)"
+    )
+    parser.add_argument(
+        "--enable-graph",
+        action="store_true",
+        default=False,
+        help="Enable S2/S3 postal contradiction graph filtering (default: False)"
+    )
     return parser.parse_args()
 
 
@@ -302,78 +314,65 @@ def run_pipeline():
                     s1_scored[s1_id].append((cand_id, score))
 
         # ================================================================
-        # PHASE 2: Singleton Veto & Graph Consistency Post-Processing
+        # PHASE 2: Singleton Veto & Graph Consistency Post-Processing (Optional)
         # ================================================================
-        with Timer(f"Phase 2: Singleton Veto & Consistency for {country}"):
-            # 2a. Singleton Veto: if top score is weak, predict empty
-            # Under Macro-F0.5: predicting a false match on a singleton scores 0.0
-            # Predicting empty on a singleton scores 1.0
-            # So veto weak matches to protect singletons
-            singleton_veto_tau = country_tau + 0.12
-            n_vetoed = 0
-            for s1_id in list(final_matches.keys()):
-                matches = final_matches[s1_id]
-                if len(matches) == 0:
-                    continue
-                scored = s1_scored.get(s1_id, [])
-                if not scored:
-                    continue
-                top_score = scored[0][1]
-                # If only 1 match and score is borderline, veto it
-                if len(matches) == 1 and top_score < singleton_veto_tau:
-                    final_matches[s1_id] = set()
-                    n_vetoed += 1
-                # If 2+ matches, drop any below a stricter per-match threshold
-                elif len(matches) >= 2:
-                    margin = scored[0][1] - scored[-1][1] if len(scored) >= 2 else 0
-                    # Drop the weakest match if its score is significantly below the top
-                    keep = set()
-                    for cid, sc in scored:
-                        if sc >= country_tau:
-                            keep.add(cid)
-                    final_matches[s1_id] = keep
+        if args.enable_veto or args.enable_graph:
+            with Timer(f"Phase 2: Singleton Veto & Consistency for {country}"):
+                # 2a. Singleton Veto: if top score is weak, predict empty
+                n_vetoed = 0
+                if args.enable_veto:
+                    singleton_veto_tau = country_tau + 0.12
+                    for s1_id in list(final_matches.keys()):
+                        matches = final_matches[s1_id]
+                        if len(matches) == 0:
+                            continue
+                        scored = s1_scored.get(s1_id, [])
+                        if not scored:
+                            continue
+                        top_score = scored[0][1]
+                        if len(matches) == 1 and top_score < singleton_veto_tau:
+                            final_matches[s1_id] = set()
+                            n_vetoed += 1
 
-            # 2b. Graph Consistency: if S2 and S3 matches have contradicting postal codes, drop weaker
-            n_graph_drops = 0
-            for s1_id, matches in final_matches.items():
-                if len(matches) < 2:
-                    continue
-                scored = s1_scored.get(s1_id, [])
-                s2_matches = [(c, s) for c, s in scored if c.startswith("S2") and c in matches]
-                s3_matches = [(c, s) for c, s in scored if c.startswith("S3") and c in matches]
-                if not s2_matches or not s3_matches:
-                    continue
-                # Check if S2 and S3 records agree on postal code
-                s2_postals = set()
-                s3_postals = set()
-                for cid, _ in s2_matches:
-                    r = pool_lookup.get(cid, {})
-                    p = r.get("postal_code", "")
-                    if p:
-                        s2_postals.add(p)
-                for cid, _ in s3_matches:
-                    r = pool_lookup.get(cid, {})
-                    p = r.get("postal_code", "")
-                    if p:
-                        s3_postals.add(p)
-                # If both have postal codes but zero overlap, drop the weaker source's weakest match
-                if s2_postals and s3_postals and not (s2_postals & s3_postals):
-                    # Find which has the weaker min score and drop its weakest
-                    s2_min = min(s2_matches, key=lambda x: x[1])
-                    s3_min = min(s3_matches, key=lambda x: x[1])
-                    if s2_min[1] < s3_min[1]:
-                        matches.discard(s2_min[0])
-                    else:
-                        matches.discard(s3_min[0])
-                    n_graph_drops += 1
+                # 2b. Graph Consistency: if S2 and S3 matches have contradicting postal codes, drop weaker
+                n_graph_drops = 0
+                if args.enable_graph:
+                    for s1_id, matches in final_matches.items():
+                        if len(matches) < 2:
+                            continue
+                        scored = s1_scored.get(s1_id, [])
+                        s2_matches = [(c, s) for c, s in scored if c.startswith("S2") and c in matches]
+                        s3_matches = [(c, s) for c, s in scored if c.startswith("S3") and c in matches]
+                        if not s2_matches or not s3_matches:
+                            continue
+                        s2_postals = set()
+                        s3_postals = set()
+                        for cid, _ in s2_matches:
+                            r = pool_lookup.get(cid, {})
+                            p = r.get("postal_code", "")
+                            if p:
+                                s2_postals.add(p)
+                        for cid, _ in s3_matches:
+                            r = pool_lookup.get(cid, {})
+                            p = r.get("postal_code", "")
+                            if p:
+                                s3_postals.add(p)
+                        if s2_postals and s3_postals and not (s2_postals & s3_postals):
+                            s2_min = min(s2_matches, key=lambda x: x[1])
+                            s3_min = min(s3_matches, key=lambda x: x[1])
+                            if s2_min[1] < s3_min[1]:
+                                matches.discard(s2_min[0])
+                            else:
+                                matches.discard(s3_min[0])
+                            n_graph_drops += 1
 
-            logger.info(f"  Singleton vetoes: {n_vetoed:,}, Graph consistency drops: {n_graph_drops:,}")
+                logger.info(f"  Singleton vetoes: {n_vetoed:,}, Graph consistency drops: {n_graph_drops:,}")
 
-            # Fill in entities with no candidates as singletons
-            for s1_rec in s1_preprocessed:
-                s1_id = s1_rec["entity_id"]
-                if s1_id not in final_matches:
-                    final_matches[s1_id] = set()
+        # Fill in entities with no candidates as singletons
+        for s1_rec in s1_preprocessed:
+            s1_id = s1_rec["entity_id"]
+            if s1_id not in final_matches:
+                final_matches[s1_id] = set()
 
         # ================================================================
         # SAVE scored pairs for optional fast threshold sweeps later
