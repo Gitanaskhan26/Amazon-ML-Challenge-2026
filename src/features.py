@@ -230,7 +230,12 @@ def extract_pair_features(
     # Source table indicator
     feats["is_s2"] = 1.0 if s23_rec.get("entity_id", "").startswith("S2") else 0.0
 
-    # 4. Cross-Feature Interaction
+    # 4. Cross-Feature Interaction & Physical Match Anchors
+    feats["strong_doorstep_match"] = 1.0 if (
+        (has_common_num and len(common_atok) >= 2)
+        or (len(common_atok) >= 4)
+        or (has_common_num and feats["exact_postal_code"] == 1.0 and len(common_atok) >= 1)
+    ) else 0.0
     feats["cross_name_addr_sim"] = feats["jw_core_name"] * feats["jw_clean_addr"]
     feats["cross_containment"] = feats["token_containment_name"] * feats["token_containment_addr"]
 

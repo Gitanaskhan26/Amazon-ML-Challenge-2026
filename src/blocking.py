@@ -312,35 +312,48 @@ class BlockingEngine:
                 post_sim = 1.0 if (postal and r.get("postal_code") == postal) else 0.0
 
                 # 1. Exact Name Match (Guaranteed top tier)
-                exact_bonus = 3.0 if cand in cands_exact else 0.0
+                exact_bonus = 3.5 if cand in cands_exact else 0.0
 
                 # 2. Skeleton Transliteration Match (cross-lingual phonetic bridge)
                 c_skel = r.get("consonant_skel", "")
                 exact_skel = bool(len(s1_skel) >= 3 and s1_skel == c_skel)
-                skel_bonus = 2.0 if exact_skel else (1.2 if cand in cands_sk else 0.0)
+                skel_bonus = 2.5 if exact_skel else (1.5 if cand in cands_sk else 0.0)
 
                 # 3. Word Overlap Bonuses
-                multi_word_bonus = 1.5 if inter >= 2 else (0.5 if inter == 1 else 0.0)
+                multi_word_bonus = 1.8 if inter >= 2 else (0.3 if inter == 1 and word_sim >= 0.3 else 0.0)
 
                 # 4. Multi Address Overlap
                 multi_addr_bonus = 0.50 if addr_inter >= 3 else (0.25 if addr_inter >= 2 else 0.0)
                 pass_bonus = 0.35 if cand in (cands_p | cands_e | cands_b) else 0.0
 
-                # 5. Doorstep Physical Address Match: Direct physical co-location
-                doorstep_match = (
-                    (num_sim == 1.0 and addr_inter >= 1)
-                    or (addr_inter >= 3)
-                    or (num_sim == 1.0 and post_sim == 1.0)
-                    or (post_sim == 1.0 and addr_inter >= 1)
+                # 5. Strong Doorstep Physical Address Match (Exact Building/Plot/House number + Locality)
+                strong_doorstep = bool(
+                    (num_sim == 1.0 and addr_inter >= 2)
+                    or (addr_inter >= 4)
+                    or (num_sim == 1.0 and post_sim == 1.0 and addr_inter >= 1)
                 )
+
+                # Moderate Doorstep (Street number or 2 address words)
+                moderate_doorstep = bool(
+                    not strong_doorstep and (
+                        (num_sim == 1.0 and addr_inter >= 1)
+                        or (addr_inter >= 2)
+                        or (num_sim == 1.0 and post_sim == 1.0)
+                    )
+                )
+
+                # Scaled Doorstep Bonus: Real physical locations get massive scores!
+                if strong_doorstep:
+                    doorstep_bonus = 2.8 + (0.25 * min(addr_inter, 6))
+                elif moderate_doorstep:
+                    doorstep_bonus = 1.0
+                else:
+                    doorstep_bonus = 0.0
 
                 has_name_affinity = bool(inter >= 1 or cand in cands_sk or exact_skel or cand in cands_exact)
 
-                # Confirmed Business Match: Doorstep Address + Name/Skeleton Affinity
-                confirmed_bonus = 2.0 if (doorstep_match and has_name_affinity) else 0.0
-
-                # Co-located neighbor with 0 name affinity gets a modest bonus, NOT outranking real name matches
-                neighbor_bonus = 0.25 if (doorstep_match and not has_name_affinity) else 0.0
+                # Confirmed Business Match: Strong Doorstep Address + Name/Skeleton Affinity
+                confirmed_bonus = 2.0 if (strong_doorstep and has_name_affinity) else 0.0
 
                 score = (
                     0.25 * word_sim
@@ -350,12 +363,20 @@ class BlockingEngine:
                     + exact_bonus
                     + skel_bonus
                     + multi_word_bonus
+                    + doorstep_bonus
                     + confirmed_bonus
-                    + neighbor_bonus
                     + multi_addr_bonus
                     + pass_bonus
                 )
-                scored.append((cand, score, cand in cands_exact, doorstep_match and has_name_affinity, cand in cands_sk or exact_skel, inter >= 2, doorstep_match))
+                scored.append((
+                    cand,
+                    score,
+                    cand in cands_exact,
+                    strong_doorstep,
+                    confirmed_bonus > 0,
+                    cand in cands_sk or exact_skel,
+                    inter >= 2
+                ))
 
             scored.sort(key=lambda x: x[1], reverse=True)
 
@@ -364,25 +385,25 @@ class BlockingEngine:
             t_exact = [x[0] for x in scored if x[2]][:20]
             protected_set = set(t_exact)
 
-            # 2. Confirmed Business Matches (Doorstep Address + Name/Skeleton Affinity)
-            t_conf_cap = max(15, int(self.adaptive_cap * 0.25))
-            t_conf = [x[0] for x in scored if x[0] not in protected_set and x[3]][:t_conf_cap]
+            # 2. Strong Doorstep Physical Address Matches (MUST never be dropped - covers DBA/trade names & cross-script entities)
+            t_door_cap = max(25, int(self.adaptive_cap * 0.35))
+            t_door = [x[0] for x in scored if x[0] not in protected_set and x[3]][:t_door_cap]
+            protected_set.update(t_door)
+
+            # 3. Confirmed Business Matches (Doorstep + Name/Skeleton Affinity)
+            t_conf_cap = max(15, int(self.adaptive_cap * 0.20))
+            t_conf = [x[0] for x in scored if x[0] not in protected_set and x[4]][:t_conf_cap]
             protected_set.update(t_conf)
 
-            # 3. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
-            t_skel_cap = max(10, int(self.adaptive_cap * 0.15))
-            t_skel = [x[0] for x in scored if x[0] not in protected_set and x[4]][:t_skel_cap]
+            # 4. Transliteration Skeleton Matches (cross-lingual phonetic bridge)
+            t_skel_cap = max(12, int(self.adaptive_cap * 0.15))
+            t_skel = [x[0] for x in scored if x[0] not in protected_set and x[5]][:t_skel_cap]
             protected_set.update(t_skel)
 
-            # 4. Multi-word Name Matches (>= 2 shared words)
-            t_name_cap = max(15, int(self.adaptive_cap * 0.25))
-            t_name = [x[0] for x in scored if x[0] not in protected_set and x[5]][:t_name_cap]
+            # 5. Multi-word Name Matches (>= 2 shared words)
+            t_name_cap = max(12, int(self.adaptive_cap * 0.15))
+            t_name = [x[0] for x in scored if x[0] not in protected_set and x[6]][:t_name_cap]
             protected_set.update(t_name)
-
-            # 5. Pure Doorstep Matches (for co-located candidates where name was missing or unparsed)
-            t_door_cap = max(10, int(self.adaptive_cap * 0.15))
-            t_door = [x[0] for x in scored if x[0] not in protected_set and x[6]][:t_door_cap]
-            protected_set.update(t_door)
 
             # 6. Fill remaining slots with the highest scoring candidates overall
             remaining = [x[0] for x in scored if x[0] not in protected_set]
