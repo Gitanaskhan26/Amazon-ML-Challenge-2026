@@ -57,8 +57,20 @@ LEGAL_SUFFIX_REGEX = re.compile(
 )
 
 # 2. Road & Address Abbreviations (US, India, France)
-ROAD_ABBREVIATIONS = {
-    # English
+#
+# FIX: previously this was a single dict literal with duplicate keys for
+# "\bavenue\b" and "\bboulevard\b" (once under the English block, once under
+# the French block). Python dict literals silently keep only the LAST value
+# for a repeated key, so the English "ave"/"blvd" mappings were dead code --
+# every record, regardless of country, normalized "Avenue"->"av" and
+# "Boulevard"->"bd". That meant a spelled-out "123 Main Boulevard" and an
+# already-abbreviated "123 Main Blvd" referring to the SAME address stopped
+# matching on first_street_token / addr_tokens after normalization.
+#
+# Fixed by splitting into country-scoped dicts and selecting the right one in
+# clean_address_multiview(), the same way US_STATE_MAP is already scoped by
+# `if country == "US"`.
+ROAD_ABBREVIATIONS_EN = {
     r"\broad\b": "rd",
     r"\bstreet\b": "st",
     r"\bavenue\b": "ave",
@@ -73,7 +85,9 @@ ROAD_ABBREVIATIONS = {
     r"\bparkway\b": "pkwy",
     r"\bapartment\b": "apt",
     r"\bsuite\b": "ste",
-    # French
+}
+
+ROAD_ABBREVIATIONS_FR = {
     r"\brue\b": "r",
     r"\bboulevard\b": "bd",
     r"\bavenue\b": "av",
@@ -86,6 +100,11 @@ ROAD_ABBREVIATIONS = {
     r"\bplace\b": "pl",
     r"\bfaubourg\b": "fbg",
 }
+
+# Kept for backward compatibility with anything importing ROAD_ABBREVIATIONS
+# directly (e.g. debug/inspection scripts) -- reflects the EN table, which is
+# what US/India records use.
+ROAD_ABBREVIATIONS = ROAD_ABBREVIATIONS_EN
 
 # 3. Known US State Code Mappings (Bidirectional)
 US_STATE_MAP = {
@@ -297,8 +316,9 @@ def clean_address_multiview(raw_addr: str, country: str = "") -> Dict[str, any]:
         if len(clean_n) <= 6:
             clean_nums.add(clean_n)
 
-    # Standardize road abbreviations
-    for pattern, repl in ROAD_ABBREVIATIONS.items():
+    # Standardize road abbreviations (country-scoped -- see ROAD_ABBREVIATIONS_EN/FR above)
+    road_map = ROAD_ABBREVIATIONS_FR if country == "France" else ROAD_ABBREVIATIONS_EN
+    for pattern, repl in road_map.items():
         s = re.sub(pattern, repl, s)
 
     # US State expansion/contraction
@@ -365,5 +385,19 @@ if __name__ == "__main__":
     print(f"  numbers: {addr_res['street_numbers']}")
     print(f"  postal_code: '{addr_res['postal_code']}'")
     print(f"  first_street: '{addr_res['first_street_token']}'")
+
+    # Regression check: spelled-out vs pre-abbreviated forms of the same
+    # street type should now normalize to the SAME first_street_token.
+    pairs = [
+        ("123 Main Boulevard, Athens, AL 35611", "123 Main Blvd, Athens, AL 35611"),
+        ("221 Baker Avenue, Boston, MA 02134", "221 Baker Ave, Boston, MA 02134"),
+    ]
+    print("\nRoad-abbreviation regression check (US):")
+    for a, b in pairs:
+        va = clean_address_multiview(a, country="US")
+        vb = clean_address_multiview(b, country="US")
+        status = "OK" if va["first_street_token"] == vb["first_street_token"] else "FAIL"
+        print(f"  [{status}] {va['first_street_token']!r} vs {vb['first_street_token']!r}  ('{a}' vs '{b}')")
+        assert va["first_street_token"] == vb["first_street_token"], "Road abbreviation mismatch!"
 
     print("\nAll preprocessing unit tests passed successfully!")
