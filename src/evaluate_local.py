@@ -158,7 +158,7 @@ def run_local_evaluation(val_dir: Path, model_path: Path, threshold: float = 0.4
                 is_s2 = cid.startswith("S2")
                 if is_s2 and s1_s2_count[s1_id] >= 5:
                     continue
-                if not is_s2 and s1_s3_count[s1_id] >= 5:
+                if not is_s2 and s1_s3_count[s1_id] >= 6:
                     continue
                 if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
                     continue

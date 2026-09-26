@@ -102,11 +102,9 @@ def consonant_skeleton(text: str) -> str:
         return ""
     translit = transliterate_indic_universal(text).lower()
     translit = (
-        translit.replace("tch", "k")
-        .replace("ch", "k")
+        translit.replace("tch", "ch")
         .replace("ck", "k")
         .replace("ph", "f")
-        .replace("sh", "s")
         .replace("w", "v")
         .replace("x", "ks")
     )

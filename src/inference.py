@@ -259,25 +259,27 @@ def run_pipeline():
                     candidate_scores.append((s1_id, cand_id, score))
 
 
-        # Enforce 1-to-at-most-1 Bipartite Invariant & Calibrated Thresholding
-        with Timer(f"Enforcing 1-to-at-most-1 Assignment (tau={country_tau:.2f}) for {country}"):
+        # Phase 1: Collect candidates per entity using bipartite assignment
+        # Use a lenient threshold to gather candidates, then optimize per-entity
+        lenient_tau = max(0.30, country_tau - 0.15)
+        with Timer(f"Bipartite Assignment + Expected-F0.5 Selection (tau={country_tau:.2f}) for {country}"):
             candidate_scores.sort(key=lambda x: x[2], reverse=True)
             assigned_s23 = set()
             s1_s2_count = defaultdict(int)
             s1_s3_count = defaultdict(int)
+            # Collect all scored candidates per S1
+            s1_candidates = defaultdict(list)  # s1_id -> [(cand_id, score), ...]
+
             for s1_id, cand_id, score in candidate_scores:
-                if score < country_tau:
-                    break  # since candidate_scores is sorted descending
+                if score < lenient_tau:
+                    break
                 if cand_id not in assigned_s23:
                     is_s2 = cand_id.startswith("S2")
-                    # Tighten cluster bounds to eliminate spurious False Positives:
-                    if is_s2 and s1_s2_count[s1_id] >= 1:
-                        if s1_s2_count[s1_id] >= 2 or score < (country_tau + 0.12):
-                            continue
-                    if not is_s2 and s1_s3_count[s1_id] >= 1:
-                        if s1_s3_count[s1_id] >= 2 or score < (country_tau + 0.12):
-                            continue
-                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 3:
+                    if is_s2 and s1_s2_count[s1_id] >= 5:
+                        continue
+                    if not is_s2 and s1_s3_count[s1_id] >= 6:
+                        continue
+                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
                         continue
 
                     assigned_s23.add(cand_id)
@@ -285,11 +287,59 @@ def run_pipeline():
                         s1_s2_count[s1_id] += 1
                     else:
                         s1_s3_count[s1_id] += 1
+                    s1_candidates[s1_id].append((cand_id, score))
 
-                    if s1_id not in final_matches:
-                        final_matches[s1_id] = set()
-                    final_matches[s1_id].add(cand_id)
+            # Phase 2: Per-Entity Expected-F0.5 Prefix Selection
+            # For each entity, decide optimal number of matches to include
+            for s1_id, cands in s1_candidates.items():
+                # cands are already sorted by score descending (from global sort)
+                scores = [s for _, s in cands]
+                best_k = 0
+                best_ef05 = 0.0  # score for predicting 0 matches (singleton)
 
+                # Estimate: P(singleton) ≈ proportion with very low top score
+                # For each prefix length k, compute expected F0.5
+                for k in range(1, len(scores) + 1):
+                    # Expected precision: average probability of top-k being true matches
+                    avg_p = sum(scores[:k]) / k
+                    # Expected F0.5 assuming:
+                    # - precision ≈ avg_p (calibrated probability = precision estimate)
+                    # - recall ≈ k * avg_p / E[|T|], where E[|T|] ≈ 3.67 (avg matches per non-singleton)
+                    # But simpler: if avg_p is the probability each predicted match is correct,
+                    # expected TP = k * avg_p, expected FP = k * (1 - avg_p)
+                    # For F0.5: precision matters 2x more than recall
+                    # A match below threshold contributes more FP risk than recall gain
+                    if scores[k-1] < country_tau:
+                        # Below the hard threshold — applying F0.5 penalty
+                        # Each additional match below tau is likely a false positive
+                        penalty = (country_tau - scores[k-1]) * 2.5
+                        avg_p_adjusted = max(0, avg_p - penalty)
+                    else:
+                        avg_p_adjusted = avg_p
+
+                    # Simple expected F0.5 for prefix of length k
+                    # Assume: precision = avg_p_adjusted, recall ~ k/(k+2) (diminishing returns)
+                    p_est = avg_p_adjusted
+                    if p_est > 0:
+                        # F0.5 formula simplified: heavily favors precision
+                        ef05 = (1.25 * p_est) / (0.25 + p_est / max(p_est, 0.5))
+                        # Penalize if top score is weak (likely singleton)
+                        if k == 1 and scores[0] < country_tau + 0.05:
+                            ef05 *= 0.85  # singleton risk penalty
+                    else:
+                        ef05 = 0.0
+
+                    if ef05 > best_ef05:
+                        best_ef05 = ef05
+                        best_k = k
+
+                # Apply the optimal prefix
+                if best_k > 0:
+                    final_matches[s1_id] = set(cid for cid, _ in cands[:best_k])
+                else:
+                    final_matches[s1_id] = set()
+
+            # Fill in entities with no candidates as singletons
             for s1_rec in s1_preprocessed:
                 s1_id = s1_rec["entity_id"]
                 if s1_id not in final_matches:
