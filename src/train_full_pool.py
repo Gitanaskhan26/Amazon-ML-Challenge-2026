@@ -80,8 +80,8 @@ def parse_args():
     parser.add_argument(
         "--adaptive-cap",
         type=int,
-        default=80,
-        help="Maximum candidates per Source 1 entity in blocking stage (default: 80)"
+        default=90,
+        help="Maximum candidates per Source 1 entity in blocking stage (default: 90)"
     )
     parser.add_argument(
         "--n-jobs",
