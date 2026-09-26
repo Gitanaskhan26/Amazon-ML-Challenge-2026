@@ -22,7 +22,6 @@ import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from collections import Counter, defaultdict
-import pandas as pd
 from tqdm import tqdm
 
 # Add repository root to path
@@ -32,11 +31,10 @@ from src.utils import Timer, logger
 
 # 1. Universal Legal Suffixes (US, India, and France)
 LEGAL_SUFFIXES = [
-    # US / UK / General
-    "limited liability company", "incorporated", "corporation", "private limited",
-    "public limited", "pvt ltd", "pvt", "ltd", "inc", "corp", "llc", "llp",
-    "private", "limited", "company", "co", "services", "enterprises", "solutions", "group", "holdings",
-    "consulting", "ventures", "management", "associates",
+    # US / UK / India
+    "limited liability company", "incorporated", "corporation",
+    "private limited", "public limited", "private ltd", "pvt limited", "pvt ltd",
+    "pvt", "ltd", "inc", "corp", "llc", "llp", "private", "limited", "company", "co",
     # France (Zero-shot in test)
     "societe a responsabilite limitee", "societe par actions simplifiee",
     "societe civile immobiliere", "entreprise unipersonnelle a responsabilite limitee",
@@ -194,10 +192,14 @@ def clean_name_multiview(raw_name: str) -> Dict[str, str]:
     norm_str = re.sub(r"[^\w\s]", " ", guarded_leet_str)
     norm_str = re.sub(r"\s+", " ", norm_str).strip()
 
-    # Core name: strip legal suffix at end
-    core_str = LEGAL_SUFFIX_REGEX.sub("", norm_str).strip()
-    if len(core_str) < 2:
-        core_str = norm_str
+    # Core name: iteratively strip legal suffixes from the end
+    core_str = norm_str
+    prev_str = ""
+    while prev_str != core_str:
+        prev_str = core_str
+        stripped = LEGAL_SUFFIX_REGEX.sub("", core_str).strip()
+        if len(stripped) >= 2:
+            core_str = stripped
 
     # Strip Devanagari legal suffixes (प र इव ट ल म ट ड, ल म ट ड, प र इव ट)
     core_str = re.sub(r"(प\s*र\s*इ\s*व\s*ट\s*ल\s*म\s*ट\s*ड|ल\s*म\s*ट\s*ड|प\s*र\s*इ\s*व\s*ट)\b", "", core_str, flags=re.IGNORECASE).strip()

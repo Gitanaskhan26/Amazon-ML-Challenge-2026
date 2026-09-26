@@ -113,9 +113,9 @@ class BlockingEngine:
                     self.idx_num_street[(num, street_tok)].append(e_id)
 
             # Pass B3: (street_number, addr_token) - Crucial for non-Latin names and messy road names
-            addr_words = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 50000], key=lambda x: self.addr_token_freq[x])
+            addr_words = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 80000], key=lambda x: self.addr_token_freq[x])
             for num in numbers:
-                for a in addr_words[:6]:
+                for a in addr_words[:10]:
                     self.idx_num_addr[(num, a)].append(e_id)
 
             # Pass D: (street_number, postal_code)
@@ -133,9 +133,9 @@ class BlockingEngine:
                 self.idx_post_street[(postal, street_tok)].append(e_id)
 
             # Pass E: Combinatorial Address Token Pairs
-            addr_words_e = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 15000], key=lambda x: self.addr_token_freq[x])
-            for i in range(min(5, len(addr_words_e))):
-                for j in range(i + 1, min(5, len(addr_words_e))):
+            addr_words_e = sorted([a for a in r.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq[a] <= 25000], key=lambda x: self.addr_token_freq[x])
+            for i in range(min(7, len(addr_words_e))):
+                for j in range(i + 1, min(7, len(addr_words_e))):
                     pair = (addr_words_e[i], addr_words_e[j]) if addr_words_e[i] < addr_words_e[j] else (addr_words_e[j], addr_words_e[i])
                     self.idx_addr_rare[pair].append(e_id)
 
@@ -200,7 +200,7 @@ class BlockingEngine:
                         cands_a.update(self.idx_name_pair[pair][:20])
 
         # Pass B, B2, B3: Street Number + Word / Street / Rare Addr Token
-        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 50000], key=lambda x: self.addr_token_freq.get(x, 0))
+        addr_words = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 80000], key=lambda x: self.addr_token_freq.get(x, 0))
         for num in numbers:
             for w in words[:3]:
                 key = (num, w)
@@ -210,7 +210,7 @@ class BlockingEngine:
                 key = (num, street_tok)
                 if key in self.idx_num_street:
                     cands_b.update(self.idx_num_street[key][:20])
-            for a in addr_words[:6]:
+            for a in addr_words[:10]:
                 key = (num, a)
                 if key in self.idx_num_addr:
                     cands_b.update(self.idx_num_addr[key][:20])
@@ -234,9 +234,9 @@ class BlockingEngine:
                     cands_p.update(self.idx_post_street[key][:20])
 
         # Pass E: Combinatorial Address Token Pairs
-        addr_words_e = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 15000], key=lambda x: self.addr_token_freq.get(x, 0))
-        for i in range(min(5, len(addr_words_e))):
-            for j in range(i + 1, min(5, len(addr_words_e))):
+        addr_words_e = sorted([a for a in s1_record.get("addr_tokens", set()) if len(a) >= 3 and self.addr_token_freq.get(a, 0) <= 25000], key=lambda x: self.addr_token_freq.get(x, 0))
+        for i in range(min(7, len(addr_words_e))):
+            for j in range(i + 1, min(7, len(addr_words_e))):
                 pair = (addr_words_e[i], addr_words_e[j]) if addr_words_e[i] < addr_words_e[j] else (addr_words_e[j], addr_words_e[i])
                 if pair in self.idx_addr_rare:
                     cands_e.update(self.idx_addr_rare[pair][:20])
