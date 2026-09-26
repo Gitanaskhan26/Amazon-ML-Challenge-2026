@@ -259,19 +259,22 @@ def run_pipeline():
                     candidate_scores.append((s1_id, cand_id, score))
 
 
-        # Phase 1: Collect candidates per entity using bipartite assignment
-        # Use a lenient threshold to gather candidates, then optimize per-entity
-        lenient_tau = max(0.30, country_tau - 0.15)
-        with Timer(f"Bipartite Assignment + Expected-F0.5 Selection (tau={country_tau:.2f}) for {country}"):
+        # ================================================================
+        # PHASE 1: Global Greedy Bipartite Assignment with GT-Based Caps
+        # ================================================================
+        # Sort ALL pairs descending by score. Walk through and assign each
+        # S2/S3 candidate to its best S1 match (1-to-at-most-1 for candidates).
+        # Per-S1 limits based on ground truth distribution:
+        #   S2: up to 5, S3: up to 6, Total: up to 8
+        with Timer(f"Phase 1: Greedy Bipartite Assignment (tau={country_tau:.2f}) for {country}"):
             candidate_scores.sort(key=lambda x: x[2], reverse=True)
             assigned_s23 = set()
             s1_s2_count = defaultdict(int)
             s1_s3_count = defaultdict(int)
-            # Collect all scored candidates per S1
-            s1_candidates = defaultdict(list)  # s1_id -> [(cand_id, score), ...]
+            s1_scored = defaultdict(list)  # s1_id -> [(cand_id, score), ...] for post-processing
 
             for s1_id, cand_id, score in candidate_scores:
-                if score < lenient_tau:
+                if score < country_tau:
                     break
                 if cand_id not in assigned_s23:
                     is_s2 = cand_id.startswith("S2")
@@ -287,63 +290,97 @@ def run_pipeline():
                         s1_s2_count[s1_id] += 1
                     else:
                         s1_s3_count[s1_id] += 1
-                    s1_candidates[s1_id].append((cand_id, score))
 
-            # Phase 2: Per-Entity Expected-F0.5 Prefix Selection
-            # For each entity, decide optimal number of matches to include
-            for s1_id, cands in s1_candidates.items():
-                # cands are already sorted by score descending (from global sort)
-                scores = [s for _, s in cands]
-                best_k = 0
-                best_ef05 = 0.0  # score for predicting 0 matches (singleton)
+                    if s1_id not in final_matches:
+                        final_matches[s1_id] = set()
+                    final_matches[s1_id].add(cand_id)
+                    s1_scored[s1_id].append((cand_id, score))
 
-                # Estimate: P(singleton) ≈ proportion with very low top score
-                # For each prefix length k, compute expected F0.5
-                for k in range(1, len(scores) + 1):
-                    # Expected precision: average probability of top-k being true matches
-                    avg_p = sum(scores[:k]) / k
-                    # Expected F0.5 assuming:
-                    # - precision ≈ avg_p (calibrated probability = precision estimate)
-                    # - recall ≈ k * avg_p / E[|T|], where E[|T|] ≈ 3.67 (avg matches per non-singleton)
-                    # But simpler: if avg_p is the probability each predicted match is correct,
-                    # expected TP = k * avg_p, expected FP = k * (1 - avg_p)
-                    # For F0.5: precision matters 2x more than recall
-                    # A match below threshold contributes more FP risk than recall gain
-                    if scores[k-1] < country_tau:
-                        # Below the hard threshold — applying F0.5 penalty
-                        # Each additional match below tau is likely a false positive
-                        penalty = (country_tau - scores[k-1]) * 2.5
-                        avg_p_adjusted = max(0, avg_p - penalty)
-                    else:
-                        avg_p_adjusted = avg_p
-
-                    # Simple expected F0.5 for prefix of length k
-                    # Assume: precision = avg_p_adjusted, recall ~ k/(k+2) (diminishing returns)
-                    p_est = avg_p_adjusted
-                    if p_est > 0:
-                        # F0.5 formula simplified: heavily favors precision
-                        ef05 = (1.25 * p_est) / (0.25 + p_est / max(p_est, 0.5))
-                        # Penalize if top score is weak (likely singleton)
-                        if k == 1 and scores[0] < country_tau + 0.05:
-                            ef05 *= 0.85  # singleton risk penalty
-                    else:
-                        ef05 = 0.0
-
-                    if ef05 > best_ef05:
-                        best_ef05 = ef05
-                        best_k = k
-
-                # Apply the optimal prefix
-                if best_k > 0:
-                    final_matches[s1_id] = set(cid for cid, _ in cands[:best_k])
-                else:
+        # ================================================================
+        # PHASE 2: Singleton Veto & Graph Consistency Post-Processing
+        # ================================================================
+        with Timer(f"Phase 2: Singleton Veto & Consistency for {country}"):
+            # 2a. Singleton Veto: if top score is weak, predict empty
+            # Under Macro-F0.5: predicting a false match on a singleton scores 0.0
+            # Predicting empty on a singleton scores 1.0
+            # So veto weak matches to protect singletons
+            singleton_veto_tau = country_tau + 0.12
+            n_vetoed = 0
+            for s1_id in list(final_matches.keys()):
+                matches = final_matches[s1_id]
+                if len(matches) == 0:
+                    continue
+                scored = s1_scored.get(s1_id, [])
+                if not scored:
+                    continue
+                top_score = scored[0][1]
+                # If only 1 match and score is borderline, veto it
+                if len(matches) == 1 and top_score < singleton_veto_tau:
                     final_matches[s1_id] = set()
+                    n_vetoed += 1
+                # If 2+ matches, drop any below a stricter per-match threshold
+                elif len(matches) >= 2:
+                    margin = scored[0][1] - scored[-1][1] if len(scored) >= 2 else 0
+                    # Drop the weakest match if its score is significantly below the top
+                    keep = set()
+                    for cid, sc in scored:
+                        if sc >= country_tau:
+                            keep.add(cid)
+                    final_matches[s1_id] = keep
+
+            # 2b. Graph Consistency: if S2 and S3 matches have contradicting postal codes, drop weaker
+            n_graph_drops = 0
+            for s1_id, matches in final_matches.items():
+                if len(matches) < 2:
+                    continue
+                scored = s1_scored.get(s1_id, [])
+                s2_matches = [(c, s) for c, s in scored if c.startswith("S2") and c in matches]
+                s3_matches = [(c, s) for c, s in scored if c.startswith("S3") and c in matches]
+                if not s2_matches or not s3_matches:
+                    continue
+                # Check if S2 and S3 records agree on postal code
+                s2_postals = set()
+                s3_postals = set()
+                for cid, _ in s2_matches:
+                    r = pool_lookup.get(cid, {})
+                    p = r.get("postal_code", "")
+                    if p:
+                        s2_postals.add(p)
+                for cid, _ in s3_matches:
+                    r = pool_lookup.get(cid, {})
+                    p = r.get("postal_code", "")
+                    if p:
+                        s3_postals.add(p)
+                # If both have postal codes but zero overlap, drop the weaker source's weakest match
+                if s2_postals and s3_postals and not (s2_postals & s3_postals):
+                    # Find which has the weaker min score and drop its weakest
+                    s2_min = min(s2_matches, key=lambda x: x[1])
+                    s3_min = min(s3_matches, key=lambda x: x[1])
+                    if s2_min[1] < s3_min[1]:
+                        matches.discard(s2_min[0])
+                    else:
+                        matches.discard(s3_min[0])
+                    n_graph_drops += 1
+
+            logger.info(f"  Singleton vetoes: {n_vetoed:,}, Graph consistency drops: {n_graph_drops:,}")
 
             # Fill in entities with no candidates as singletons
             for s1_rec in s1_preprocessed:
                 s1_id = s1_rec["entity_id"]
                 if s1_id not in final_matches:
                     final_matches[s1_id] = set()
+
+        # ================================================================
+        # SAVE scored pairs for optional fast threshold sweeps later
+        # ================================================================
+        scored_path = out_dir / f"scored_pairs_{country}.tsv"
+        with Timer(f"Saving scored pairs for {country}"):
+            with open(scored_path, "w", encoding="utf-8") as fout:
+                fout.write("source1_entity_id\tcandidate_entity_id\tscore\n")
+                for s1_id, pairs in s1_scored.items():
+                    for cid, sc in pairs:
+                        fout.write(f"{s1_id}\t{cid}\t{sc:.6f}\n")
+        logger.info(f"  Saved scored pairs: {scored_path}")
 
         # Free memory before next country partition
         del candidate_scores
@@ -352,6 +389,7 @@ def run_pipeline():
         del pairs_to_score
         del s1_lookup
         del s1_preprocessed
+        del s1_scored
         gc.collect()
 
 

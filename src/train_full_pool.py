@@ -378,13 +378,16 @@ def train_full_pool():
         params = {
             "objective": "binary",
             "metric": ["binary_logloss", "auc"],
-            "learning_rate": 0.08,
+            "learning_rate": 0.06,
             "num_leaves": 63,
             "max_depth": 8,
-            "min_data_in_leaf": 50,
-            "feature_fraction": 0.85,
-            "bagging_fraction": 0.85,
+            "min_data_in_leaf": 80,
+            "feature_fraction": 0.80,
+            "bagging_fraction": 0.80,
             "bagging_freq": 1,
+            "lambda_l1": 0.1,
+            "lambda_l2": 1.0,
+            "min_gain_to_split": 0.01,
             "num_threads": args.n_jobs,
             "verbose": -1
         }
@@ -392,9 +395,9 @@ def train_full_pool():
         booster = lgb.train(
             params,
             dtrain,
-            num_boost_round=400,
+            num_boost_round=600,
             valid_sets=[dtrain, dval],
-            callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=True), lgb.log_evaluation(period=50)]
+            callbacks=[lgb.early_stopping(stopping_rounds=40, verbose=True), lgb.log_evaluation(period=50)]
         )
 
         booster.save_model(str(model_out))
@@ -412,8 +415,8 @@ def train_full_pool():
     if HAS_CATBOOST:
         with Timer("Training CatBoost Classifier with Symmetric Trees"):
             cb_model = CatBoostClassifier(
-                iterations=350,
-                learning_rate=0.08,
+                iterations=500,
+                learning_rate=0.06,
                 depth=7,
                 thread_count=args.n_jobs,
                 verbose=50,
@@ -454,7 +457,7 @@ def train_full_pool():
         best_metrics = {}
 
         logger.info("--- Threshold Calibration Results (Macro-F0.5) ---")
-        for tau in np.arange(0.40, 0.80, 0.03):
+        for tau in np.arange(0.40, 0.80, 0.01):
             tau = round(float(tau), 2)
             assigned_s23 = set()
             s1_s2_count = defaultdict(int)
@@ -501,7 +504,7 @@ def train_full_pool():
         best_tau_in = best_tau
         best_score_in = 0.0
 
-        for tau in np.arange(0.40, 0.80, 0.03):
+        for tau in np.arange(0.40, 0.80, 0.01):
             tau = round(float(tau), 2)
             assigned_s23 = set()
             s1_s2_count = defaultdict(int)
@@ -512,14 +515,12 @@ def train_full_pool():
                     break
                 if cand_id not in assigned_s23:
                     is_s2 = cand_id.startswith("S2")
-                    # Tighten cluster bounds to eliminate spurious False Positives
-                    if is_s2 and s1_s2_count[s1_id] >= 1:
-                        if s1_s2_count[s1_id] >= 2 or score < (tau + 0.12):
-                            continue
-                    if not is_s2 and s1_s3_count[s1_id] >= 1:
-                        if s1_s3_count[s1_id] >= 2 or score < (tau + 0.12):
-                            continue
-                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 3:
+                    # Per-source match limits based on ground truth distribution
+                    if is_s2 and s1_s2_count[s1_id] >= 5:
+                        continue
+                    if not is_s2 and s1_s3_count[s1_id] >= 6:
+                        continue
+                    if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
                         continue
                     assigned_s23.add(cand_id)
                     if is_s2:
@@ -555,14 +556,12 @@ def train_full_pool():
                 continue
             if cand_id not in assigned_s23:
                 is_s2 = cand_id.startswith("S2")
-                # Tighten cluster bounds to eliminate spurious False Positives:
-                if is_s2 and s1_s2_count[s1_id] >= 1:
-                    if s1_s2_count[s1_id] >= 2 or score < (c_tau + 0.12):
-                        continue
-                if not is_s2 and s1_s3_count[s1_id] >= 1:
-                    if s1_s3_count[s1_id] >= 2 or score < (c_tau + 0.12):
-                        continue
-                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 3:
+                # Per-source match limits based on ground truth distribution
+                if is_s2 and s1_s2_count[s1_id] >= 5:
+                    continue
+                if not is_s2 and s1_s3_count[s1_id] >= 6:
+                    continue
+                if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8:
                     continue
                 assigned_s23.add(cand_id)
                 if is_s2:

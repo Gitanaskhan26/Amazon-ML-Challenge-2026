@@ -244,13 +244,62 @@ def extract_pair_features(
     sk2 = s23_rec.get("consonant_skel", "")
     if sk1 and sk2:
         feats["skel_similarity"] = jaro_winkler_sim(sk1, sk2)
+        feats["skel_exact"] = 1.0 if sk1 == sk2 else 0.0
         sk1_3g = set(sk1[i:i+3] for i in range(len(sk1) - 2)) if len(sk1) >= 3 else set([sk1])
         sk2_3g = set(sk2[i:i+3] for i in range(len(sk2) - 2)) if len(sk2) >= 3 else set([sk2])
         union_3g = sk1_3g | sk2_3g
         feats["skel_char3_jaccard"] = len(sk1_3g & sk2_3g) / len(union_3g) if union_3g else 0.0
     else:
         feats["skel_similarity"] = 0.0
+        feats["skel_exact"] = 0.0
         feats["skel_char3_jaccard"] = 0.0
+
+    # 6. Normalized Levenshtein Distance (complements Jaro-Winkler)
+    if HAS_RAPIDFUZZ:
+        feats["norm_levenshtein_name"] = float(Levenshtein.normalized_similarity(c1, c2)) if (c1 and c2) else 0.0
+        feats["norm_levenshtein_addr"] = float(Levenshtein.normalized_similarity(a1, a2)) if (a1 and a2) else 0.0
+    else:
+        feats["norm_levenshtein_name"] = 0.0
+        feats["norm_levenshtein_addr"] = 0.0
+
+    # 7. Partial Ratio (handles DBA / substring names like "Burger King" inside "Burger King Holdings Inc")
+    if HAS_RAPIDFUZZ and c1 and c2:
+        feats["partial_ratio_name"] = fuzz.partial_ratio(c1, c2) / 100.0
+    else:
+        feats["partial_ratio_name"] = 0.0
+
+    # 8. Prefix & Suffix Agreement (first/last 5 chars — detects abbreviation patterns)
+    prefix_len = min(5, len(c1), len(c2))
+    feats["prefix5_match"] = 1.0 if (prefix_len > 0 and c1[:prefix_len] == c2[:prefix_len]) else 0.0
+    suffix_len = min(4, len(c1), len(c2))
+    feats["suffix4_match"] = 1.0 if (suffix_len > 0 and c1[-suffix_len:] == c2[-suffix_len:]) else 0.0
+
+    # 9. Token Count Ratio (detects abbreviations and missing words)
+    n_tok1 = max(len(tokens1), 1)
+    n_tok2 = max(len(tokens2), 1)
+    feats["name_token_count_ratio"] = min(n_tok1, n_tok2) / max(n_tok1, n_tok2)
+
+    # 10. Address Completeness Features
+    n_atok1 = len(atok1)
+    n_atok2 = len(atok2)
+    feats["addr_token_count_min"] = float(min(n_atok1, n_atok2))
+    feats["addr_overlap_ratio"] = float(len(common_atok)) / max(n_atok1, n_atok2, 1)
+
+    # 11. Combined Cross Features (precision-critical interactions)
+    feats["cross_name_postal"] = feats["jw_core_name"] * feats["exact_postal_code"]
+    feats["cross_name_number"] = feats["jw_core_name"] * feats["has_common_number"]
+    feats["cross_doorstep_name_sim"] = feats["strong_doorstep_match"] * feats["jw_core_name"]
+
+    # 12. Number Count Agreement
+    feats["number_count_match"] = 1.0 if len(nums1) == len(nums2) else 0.0
+
+    # 13. Char 4-gram Jaccard (more discriminative for longer names)
+    feats["char4_jaccard_name"] = char_ngram_jaccard(c1, c2, n=4) if (len(c1) >= 4 and len(c2) >= 4) else feats["char3_jaccard_name"]
+
+    # 14. Soundex of full core name (phonetic matching across transliterations)
+    sdx1 = soundex(c1.split()[0]) if c1 else ""
+    sdx2 = soundex(c2.split()[0]) if c2 else ""
+    feats["soundex_core_match"] = 1.0 if (sdx1 and sdx2 and sdx1 == sdx2) else 0.0
 
     return feats
 
