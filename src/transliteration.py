@@ -88,15 +88,19 @@ def consonant_skeleton(text: str) -> str:
     """
     Produces the invariant consonant skeleton of a name by:
       1. Transliterating Indic script to Latin phonemes
-      2. Removing all vowels and punctuation
-    Enables cross-lingual matching:
+      2. Normalizing 'w' -> 'v'
+      3. Removing all vowels and punctuation
+      4. Collapsing consecutive duplicate consonants (e.g. 'gg' -> 'g')
+    Enables cross-lingual and spelling-invariant matching:
       'Premier Tech' -> 'prmrtch'
       'प र म यर ट क'  -> 'prmyrtk' (89% similarity)
+      'Aggarwal' vs 'Agarwal' -> 'grvl' (100% exact match)
     """
     if not text:
         return ""
-    translit = transliterate_indic_universal(text).lower()
-    return "".join(c for c in translit if c.isalpha() and c not in VOWEL_SET)
+    translit = transliterate_indic_universal(text).lower().replace("w", "v")
+    raw = "".join(c for c in translit if c.isalpha() and c not in VOWEL_SET)
+    return re.sub(r"(.)\1+", r"\1", raw)
 
 
 def skeleton_3grams(skeleton: str) -> Set[str]:

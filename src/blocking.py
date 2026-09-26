@@ -48,6 +48,7 @@ class BlockingEngine:
         self.idx_post_street = defaultdict(list)
         self.idx_addr_rare = defaultdict(list)
         self.idx_char3 = defaultdict(list)
+        self.idx_skel_exact = defaultdict(list)
         self.idx_skel3 = defaultdict(list)
 
         # Token and 3-gram frequencies
@@ -151,9 +152,10 @@ class BlockingEngine:
                     if self.char3_freq[tri] <= self.char3_thresh:
                         self.idx_char3[tri].append(e_id)
 
-            # Pass SK: Consonant Skeleton 3-grams (cross-lingual transliteration bridge)
+            # Pass SK: Consonant Skeleton Exact & 3-grams (cross-lingual transliteration bridge)
             skel = r.get("consonant_skel", "")
             if len(skel) >= 3:
+                self.idx_skel_exact[skel].append(e_id)
                 for i in range(len(skel) - 2):
                     tri = skel[i:i+3]
                     if self.skel3_freq[tri] <= 8000:
@@ -266,15 +268,18 @@ class BlockingEngine:
             for cid, _ in char_counts.most_common(10):
                 cands_c.add(cid)
 
-        # Pass SK: Consonant Skeleton 3-grams (cross-lingual transliteration bridge)
+        # Pass SK: Consonant Skeleton Exact & 3-grams (cross-lingual transliteration bridge)
         cands_sk = set()
         s1_skel = s1_record.get("consonant_skel", "")
         if len(s1_skel) >= 3:
+            if s1_skel in self.idx_skel_exact:
+                cands_sk.update(self.idx_skel_exact[s1_skel][:25])
             s1_tris = list(set(s1_skel[i:i+3] for i in range(len(s1_skel) - 2)))
-            s1_tris.sort(key=lambda t: self.skel3_freq.get(t, 0))
-            for tri in s1_tris[:3]:
-                if self.skel3_freq.get(tri, 0) <= 8000 and tri in self.idx_skel3:
-                    cands_sk.update(self.idx_skel3[tri][:20])
+            valid_tris = [t for t in s1_tris if 0 < self.skel3_freq.get(t, 0) <= 8000]
+            valid_tris.sort(key=lambda t: self.skel3_freq[t])
+            for tri in valid_tris[:4]:
+                if tri in self.idx_skel3:
+                    cands_sk.update(self.idx_skel3[tri][:25])
 
         # Union
         union_set = cands_exact | cands_a | cands_b | cands_c | cands_d | cands_e | cands_p | cands_sk
