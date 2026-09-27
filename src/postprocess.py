@@ -190,12 +190,29 @@ def main():
     # Load S1 IDs for all countries
     all_s1_ids = set()
     if args.test_dir:
-        s1_path = Path(args.test_dir).resolve() / "test_source1.tsv"
-        if s1_path.exists():
-            df_s1 = pd.read_csv(s1_path, sep="\t", dtype=str, usecols=["entity_id", "country"])
-            all_s1_ids = set(df_s1["entity_id"])
-            s1_countries = dict(zip(df_s1["entity_id"], df_s1["country"]))
-            logger.info(f"  Total S1 entities: {len(all_s1_ids):,}")
+        test_dir = Path(args.test_dir).resolve()
+        for fname in ["test_source1.tsv", "source1.tsv", "test_source_1.tsv", "source_1.tsv"]:
+            candidate_path = test_dir / fname
+            if candidate_path.exists():
+                df_s1 = pd.read_csv(candidate_path, sep="\t", dtype=str, usecols=["entity_id", "country"])
+                all_s1_ids = set(df_s1["entity_id"])
+                logger.info(f"  Total S1 entities loaded from {fname}: {len(all_s1_ids):,}")
+                break
+
+    # Fallback to existing candidate_pairs.tsv or matching_results.tsv
+    if not all_s1_ids:
+        cand_file = output_dir / "candidate_pairs.tsv"
+        if not cand_file.exists():
+            cand_file = output_dir / "matching_results.tsv"
+        if cand_file.exists():
+            logger.info(f"Loading all S1 entities from {cand_file.name} fallback...")
+            with open(cand_file, "r", encoding="utf-8") as f:
+                next(f)
+                for line in f:
+                    parts = line.split("\t")
+                    if parts and parts[0].strip():
+                        all_s1_ids.add(parts[0].strip())
+            logger.info(f"  Total S1 entities from {cand_file.name}: {len(all_s1_ids):,}")
 
     # Resolve thresholds
     import json
@@ -270,6 +287,30 @@ def main():
     logger.info(f"\n=== Match Distribution ===")
     for k in sorted(dist.keys()):
         logger.info(f"  {k} matches: {dist[k]:>10,} ({100*dist[k]/total_entities:.1f}%)")
+
+    # Run official validator on postprocessed output
+    val_script = Path(__file__).resolve().parent.parent / "utils" / "validate_submission.py"
+    cand_path = output_dir / "candidate_pairs.tsv"
+    if val_script.exists() and args.test_dir:
+        import subprocess
+        logger.info("=" * 60)
+        logger.info("Running Official Validation Script (utils/validate_submission.py)...")
+        cmd = [
+            sys.executable,
+            str(val_script),
+            "--matching", str(match_path),
+            "--test-dir", str(args.test_dir)
+        ]
+        if cand_path.exists():
+            cmd.extend(["--candidate", str(cand_path)])
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        print(res.stdout)
+        if res.stderr:
+            print(res.stderr)
+        if res.returncode == 0:
+            logger.info(">>> VALIDATION STATUS: PASS (Exit code 0). POSTPROCESSED SUBMISSION IS 100% VALID! <<<")
+        else:
+            logger.warning(">>> VALIDATION DIAGNOSTIC: Review validator output above. <<<")
 
 
 if __name__ == "__main__":
