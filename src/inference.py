@@ -37,6 +37,61 @@ from src.train import (
 
 
 
+def are_cross_source_twins(r2: dict, r3: dict, country: str = "") -> bool:
+    """
+    Determines if an S2 entity and an S3 entity represent the exact same physical business.
+    Used for transitive recovery of borderline matches with high precision.
+    """
+    p2 = r2.get("postal_code", "")
+    p3 = r3.get("postal_code", "")
+    # Hard contradiction for India: different 2-digit PIN circle (different states)
+    if country == "India" and p2 and p3 and len(p2) == 6 and len(p3) == 6 and p2[:2] != p3[:2]:
+        return False
+
+    core2 = r2.get("core_name", "")
+    core3 = r3.get("core_name", "")
+    compact2 = core2.replace(" ", "")
+    compact3 = core3.replace(" ", "")
+    exact_name = bool(compact2 and compact2 == compact3)
+
+    skel2 = r2.get("consonant_skel", "")
+    skel3 = r3.get("consonant_skel", "")
+    exact_skel = bool(skel2 and len(skel2) >= 3 and skel2 == skel3)
+
+    words2 = r2.get("core_words", set())
+    words3 = r3.get("core_words", set())
+    inter = len(words2 & words3)
+    min_words = min(len(words2), len(words3))
+    containment = inter / min_words if min_words > 0 else 0.0
+
+    nums2 = r2.get("street_numbers", set())
+    nums3 = r3.get("street_numbers", set())
+    has_num_match = bool(nums2 and nums3 and (nums2 & nums3))
+
+    toks2 = r2.get("addr_tokens", set())
+    toks3 = r3.get("addr_tokens", set())
+    addr_inter = len(toks2 & toks3)
+
+    postal_match = bool(p2 and p3 and p2 == p3)
+
+    # Condition 1: Exact Name or Skeleton match + physical verification
+    if exact_name or exact_skel:
+        if postal_match or has_num_match or addr_inter >= 1:
+            return True
+
+    # Condition 2: High token containment (brand within longer legal name) + physical verification
+    if containment >= 0.80 and inter >= 1:
+        if postal_match or has_num_match or addr_inter >= 2:
+            return True
+
+    # Condition 3: Same building (exact number + exact postal) + at least 1 common name token
+    if postal_match and has_num_match and inter >= 1:
+        return True
+
+    return False
+
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run Full Test Inference Pipeline.")
     parser.add_argument(
@@ -86,6 +141,19 @@ def parse_args():
         action="store_true",
         default=False,
         help="Enable S2/S3 postal contradiction graph filtering (default: False)"
+    )
+    parser.add_argument(
+        "--enable-transitive",
+        dest="enable_transitive",
+        action="store_true",
+        default=True,
+        help="Enable Multi-Source S2<->S3 Transitive Closure & Intra-Clique Consistency (default: True)"
+    )
+    parser.add_argument(
+        "--no-transitive",
+        dest="enable_transitive",
+        action="store_false",
+        help="Disable Multi-Source S2<->S3 Transitive Closure"
     )
     return parser.parse_args()
 
@@ -312,6 +380,98 @@ def run_pipeline():
                         final_matches[s1_id] = set()
                     final_matches[s1_id].add(cand_id)
                     s1_scored[s1_id].append((cand_id, score))
+
+        # ================================================================
+        # PHASE 1.5: Multi-Source Transitive Closure & Intra-Clique Consistency
+        # ================================================================
+        if getattr(args, "enable_transitive", True):
+            with Timer(f"Phase 1.5: S2<->S3 Transitive Closure & Consistency for {country}"):
+                # Group borderline candidate scores (0.35 <= score < country_tau) by s1_id
+                s1_borderline = defaultdict(list)
+                for s1_id, cand_id, score in candidate_scores:
+                    if 0.35 <= score < country_tau:
+                        s1_borderline[s1_id].append((cand_id, score))
+
+                n_transitive_rescues = 0
+                n_state_vetoes = 0
+
+                # 1. Transitive Candidate Recovery (S2 <-> S3 Cross-Validation)
+                for s1_id, matches in final_matches.items():
+                    if not matches:
+                        continue
+                    borderline = s1_borderline.get(s1_id, [])
+                    if not borderline:
+                        continue
+
+                    accepted_s2 = [c for c in matches if c.startswith("S2")]
+                    accepted_s3 = [c for c in matches if c.startswith("S3")]
+
+                    # Case A: Rescue S3 matches if high-confidence S2 matches exist
+                    if accepted_s2 and len(accepted_s3) < 6:
+                        for s3_id, sc in borderline:
+                            if not s3_id.startswith("S3") or s3_id in assigned_s23:
+                                continue
+                            if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8 or s1_s3_count[s1_id] >= 6:
+                                break
+                            r3 = pool_lookup.get(s3_id, {})
+                            is_twin = False
+                            for s2_id in accepted_s2:
+                                r2 = pool_lookup.get(s2_id, {})
+                                if are_cross_source_twins(r2, r3, country):
+                                    is_twin = True
+                                    break
+                            if is_twin:
+                                assigned_s23.add(s3_id)
+                                s1_s3_count[s1_id] += 1
+                                matches.add(s3_id)
+                                s1_scored[s1_id].append((s3_id, sc))
+                                n_transitive_rescues += 1
+
+                    # Case B: Rescue S2 matches if high-confidence S3 matches exist
+                    if accepted_s3 and len(accepted_s2) < 5:
+                        for s2_id, sc in borderline:
+                            if not s2_id.startswith("S2") or s2_id in assigned_s23:
+                                continue
+                            if (s1_s2_count[s1_id] + s1_s3_count[s1_id]) >= 8 or s1_s2_count[s1_id] >= 5:
+                                break
+                            r2 = pool_lookup.get(s2_id, {})
+                            is_twin = False
+                            for s3_id in accepted_s3:
+                                r3 = pool_lookup.get(s3_id, {})
+                                if are_cross_source_twins(r2, r3, country):
+                                    is_twin = True
+                                    break
+                            if is_twin:
+                                assigned_s23.add(s2_id)
+                                s1_s2_count[s1_id] += 1
+                                matches.add(s2_id)
+                                s1_scored[s1_id].append((s2_id, sc))
+                                n_transitive_rescues += 1
+
+                # 2. Intra-Clique State Contradiction Veto (India):
+                # Businesses in different 2-digit PIN circles are in different states.
+                if country == "India":
+                    for s1_id, matches in final_matches.items():
+                        if len(matches) < 2:
+                            continue
+                        scored_dict = dict(s1_scored.get(s1_id, []))
+                        to_drop = set()
+                        match_list = list(matches)
+                        for i in range(len(match_list)):
+                            for j in range(i + 1, len(match_list)):
+                                c1, c2 = match_list[i], match_list[j]
+                                p1 = pool_lookup.get(c1, {}).get("postal_code", "")
+                                p2 = pool_lookup.get(c2, {}).get("postal_code", "")
+                                if p1 and p2 and len(p1) == 6 and len(p2) == 6 and p1[:2] != p2[:2]:
+                                    sc1 = scored_dict.get(c1, 0.0)
+                                    sc2 = scored_dict.get(c2, 0.0)
+                                    weaker = c1 if sc1 < sc2 else c2
+                                    to_drop.add(weaker)
+                                    n_state_vetoes += 1
+                        for d in to_drop:
+                            matches.discard(d)
+
+                logger.info(f"  Transitive rescues: {n_transitive_rescues:,}, Intra-clique state vetoes: {n_state_vetoes:,}")
 
         # ================================================================
         # PHASE 2: Singleton Veto & Graph Consistency Post-Processing (Optional)
