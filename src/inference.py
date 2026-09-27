@@ -35,6 +35,12 @@ from src.train import (
     select_optimal_prefix_per_entity
 )
 
+try:
+    from src.transformer_matcher import DenseSemanticMatcher, HAS_SENTENCE_TRANSFORMERS
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
+    DenseSemanticMatcher = None
+
 
 
 def are_cross_source_twins(r2: dict, r3: dict, country: str = "") -> bool:
@@ -154,6 +160,18 @@ def parse_args():
         dest="enable_transitive",
         action="store_false",
         help="Disable Multi-Source S2<->S3 Transitive Closure"
+    )
+    parser.add_argument(
+        "--enable-transformer",
+        action="store_true",
+        default=False,
+        help="Enable Dense Multilingual Transformer Semantic Similarity Rescoring (requires sentence-transformers)"
+    )
+    parser.add_argument(
+        "--transformer-model",
+        type=str,
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        help="HuggingFace model for Dense Semantic Matcher"
     )
     return parser.parse_args()
 
@@ -318,7 +336,24 @@ def run_pipeline():
 
         logger.info(f"Total candidate pairs to score for {country}: {len(pairs_to_score):,}")
 
-        # 2. Batched Scoring with LightGBM (chunks of 100,000 pairs!)
+        # Optional Dense Transformer Semantic Encoding
+        s1_embs = None
+        pool_embs = None
+        if getattr(args, "enable_transformer", False) and HAS_SENTENCE_TRANSFORMERS and DenseSemanticMatcher is not None:
+            with Timer(f"Dense Transformer Semantic Encoding for {country}"):
+                try:
+                    t_matcher = DenseSemanticMatcher(model_name=args.transformer_model)
+                    s1_embs = t_matcher.encode_entities(s1_lookup)
+                    active_pool_ids = set(cand_id for _, cand_id in pairs_to_score)
+                    active_pool_dict = {cid: pool_lookup[cid] for cid in active_pool_ids if cid in pool_lookup}
+                    pool_embs = t_matcher.encode_entities(active_pool_dict)
+                    logger.info(f"  Successfully encoded {len(s1_embs):,} S1 and {len(pool_embs):,} pool entities with {args.transformer_model}")
+                except Exception as e:
+                    logger.warning(f"Could not run transformer encoder: {e}. Falling back to pure GBDT ensemble.")
+                    s1_embs = None
+                    pool_embs = None
+
+        # 2. Batched Scoring with LightGBM + CatBoost (chunks of 100,000 pairs!)
         candidate_scores = []
         with Timer(f"Batched Scoring of {len(pairs_to_score):,} pairs in {country}"):
             if booster is not None:
@@ -336,12 +371,26 @@ def run_pipeline():
                         cb_probs = cb_booster.predict_proba(X_np)[:, 1]
                         probs = 0.5 * probs + 0.5 * cb_probs
 
+                    # Blend Transformer Dense Semantic Similarity if enabled
+                    if s1_embs is not None and pool_embs is not None:
+                        emb_dim = 384
+                        vecs1 = np.array([s1_embs.get(s1_id, np.zeros(emb_dim, dtype=np.float32)) for s1_id, _ in batch_pairs], dtype=np.float32)
+                        vecs2 = np.array([pool_embs.get(cand_id, np.zeros(emb_dim, dtype=np.float32)) for _, cand_id in batch_pairs], dtype=np.float32)
+                        sem_sims = np.clip(np.sum(vecs1 * vecs2, axis=1), 0.0, 1.0)
+                        # 80% GBDT Calibrated Score + 20% Transformer Semantic Similarity
+                        probs = 0.80 * probs + 0.20 * sem_sims
+
                     for (s1_id, cand_id), prob in zip(batch_pairs, probs):
                         candidate_scores.append((s1_id, cand_id, float(prob)))
             else:
                 for s1_id, cand_id in pairs_to_score:
                     score = heuristic_score_pair(s1_lookup[s1_id], pool_lookup[cand_id])
                     candidate_scores.append((s1_id, cand_id, score))
+
+        if s1_embs is not None:
+            del s1_embs
+            del pool_embs
+            gc.collect()
 
 
         # ================================================================
