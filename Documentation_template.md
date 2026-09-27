@@ -1,7 +1,7 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** [Your Team Name]  
-**Team Members:** [List all team members]  
+**Team Name:** WunderBär  
+**Team Members:** Anas Khan  
 **Submission Date:** September 27, 2026  
 
 ---
