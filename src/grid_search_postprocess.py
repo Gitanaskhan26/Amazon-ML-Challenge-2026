@@ -135,7 +135,7 @@ def run_assignment(pairs, tau, veto_margin=0.12, enable_veto=True,
         final_matches[s1_id].add(cand_id)
         s1_scored[s1_id].append((cand_id, score))
 
-    # Singleton Veto
+    # Singleton Veto (Standard: top score must exceed tau + margin)
     n_vetoed = 0
     if enable_veto:
         singleton_veto_tau = tau + veto_margin
@@ -148,6 +148,31 @@ def run_assignment(pairs, tau, veto_margin=0.12, enable_veto=True,
             if len(matches) == 1 and top_score < singleton_veto_tau:
                 final_matches[s1_id] = set()
                 n_vetoed += 1
+
+    # Score-Gap Confidence Veto:
+    # If an entity has exactly 1 match that barely cleared tau (within 0.05),
+    # AND that match comes from only ONE source (no cross-source corroboration),
+    # it's very likely a false positive. Veto it.
+    n_gap_vetoed = 0
+    if enable_veto and veto_margin > 0:
+        gap_tau = tau + 0.03  # Must clear tau by at least 0.03 if uncorroborated
+        for s1_id in list(final_matches.keys()):
+            matches = final_matches[s1_id]
+            if len(matches) != 1:
+                continue
+            scored = s1_scored.get(s1_id, [])
+            if not scored:
+                continue
+            cand_id, score = scored[0]
+            if score >= gap_tau:
+                continue
+            # Check: is this match from only one source with no corroboration?
+            has_s2 = any(c.startswith("S2") for c in matches)
+            has_s3 = any(c.startswith("S3") for c in matches)
+            if has_s2 != has_s3:  # Only one source, no cross-validation
+                final_matches[s1_id] = set()
+                n_gap_vetoed += 1
+    n_vetoed += n_gap_vetoed
 
     # India State Contradiction Veto (2-digit PIN prefix mismatch)
     n_state_vetoes = 0
