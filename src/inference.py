@@ -590,9 +590,10 @@ def run_pipeline():
         with Timer(f"Saving scored pairs for {country}"):
             with open(scored_path, "w", encoding="utf-8") as fout:
                 fout.write("source1_entity_id\tcandidate_entity_id\tscore\n")
-                for s1_id, pairs in s1_scored.items():
-                    for cid, sc in pairs:
-                        fout.write(f"{s1_id}\t{cid}\t{sc:.6f}\n")
+                for s1_id, cid, sc in candidate_scores:
+                    if sc < 0.25:
+                        break
+                    fout.write(f"{s1_id}\t{cid}\t{sc:.6f}\n")
         logger.info(f"  Saved scored pairs: {scored_path}")
 
         # Free memory before next country partition
